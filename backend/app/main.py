@@ -707,6 +707,26 @@ async def orchestrate(request: AgentRequest):
     except asyncio.TimeoutError:raise HTTPException(504,"orchestration timed out")
 
 
+@app.get(config.api_prefix + "/agents/roles")
+async def agent_roles():
+    """Phase 15 — read-only view of the multi-agent role specifications.
+    Diagnostic only: this endpoint cannot modify roles, permissions or policy
+    (the agent may never alter its own security configuration)."""
+    from app.multi_agent import build_roles
+    roles = build_roles(registry())
+    return {
+        "multi_agent_enabled": config.multi_agent_enabled,
+        "budgets": {
+            "max_depth": config.max_agent_depth,
+            "runtime_seconds": config.agent_timeout_seconds,
+            "total_tokens": config.multi_agent_max_tokens,
+            "total_tool_calls": config.multi_agent_max_tool_calls,
+            "concurrent_workers": config.multi_agent_max_concurrent_workers,
+        },
+        "roles": [role.model_dump(mode="json") for role in roles.values()],
+    }
+
+
 @app.get(config.api_prefix + "/memories", response_model=list[MemoryItem])
 async def memories(query: str | None = Query(None, max_length=500), limit: int = Query(50, ge=1, le=200)):
     gate = get_control_center()

@@ -49,6 +49,16 @@ class Settings(BaseSettings):
     tool_timeout_seconds: float = Field(20, gt=0, le=600)
     max_tool_output_chars: int = Field(20_000, ge=1_000, le=100_000)
     agent_enabled: bool = True
+    # --- Phase 15: multi-agent architecture --------------------------------- #
+    # OFF by default: /orchestrate keeps the stable single-agent ManagerAgent
+    # path. When ON, requests that route to specialist workers run through
+    # app.multi_agent.MultiAgentManager (bounded depth/runtime/tokens/tool
+    # calls/concurrency; reviewer validation before completion). Every action
+    # still passes the central Registry/Control Center/approval pipeline.
+    multi_agent_enabled: bool = False
+    multi_agent_max_tokens: int = Field(500_000, ge=10_000, le=10_000_000)
+    multi_agent_max_tool_calls: int = Field(20, ge=1, le=50)
+    multi_agent_max_concurrent_workers: int = Field(2, ge=1, le=4)
     # Phase 6 — Observe→Plan→Act→Verify→Recover loop. When enabled, bounded
     # task execution runs through app.computer.loop.ComputerLoop (which reuses
     # the same Registry/permission/Control-Center gates). Disabled by default;
