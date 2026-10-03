@@ -49,6 +49,14 @@ class Settings(BaseSettings):
     tool_timeout_seconds: float = Field(20, gt=0, le=600)
     max_tool_output_chars: int = Field(20_000, ge=1_000, le=100_000)
     agent_enabled: bool = True
+    # Phase 6 — Observe→Plan→Act→Verify→Recover loop. When enabled, bounded
+    # task execution runs through app.computer.loop.ComputerLoop (which reuses
+    # the same Registry/permission/Control-Center gates). Disabled by default;
+    # flipping it on is an explicit operator decision.
+    computer_loop_enabled: bool = False
+    # Token budget charged against every completed loop run (estimate-based;
+    # real prompt/completion counts are used when the provider reports them).
+    max_loop_tokens: int = Field(2_000_000, ge=1_000, le=100_000_000)
     autonomous_mode: bool = False
     tools_enabled: bool = True
     filesystem_tools_enabled: bool = True
