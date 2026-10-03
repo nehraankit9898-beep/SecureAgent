@@ -1,5 +1,15 @@
 from app.agents import AgentInput, ManagerAgent
+from app.config import settings
 from app.models import ExecutionError, ExecutionResponse, TaskStatus
+
+
+def _multi_agent_enabled() -> bool:
+    """Phase 15 opt-in flag. Fail closed: any configuration problem keeps the
+    stable single-agent path."""
+    try:
+        return bool(settings().multi_agent_enabled)
+    except Exception:
+        return False
 
 def execution_response(task, provider, *, roles=None, review_approved=True, notes=None):
     successful = [step for step in task.steps if step.result and step.result.success]
@@ -21,8 +31,24 @@ def execution_response(task, provider, *, roles=None, review_approved=True, note
     return ExecutionResponse(response_type=response_type,status=task.status,answer=task.answer,task=task,provider=provider,roles=roles or [],review_approved=review_approved,notes=notes or [],error=error)
 
 class Orchestrator:
-    def __init__(self,agent):self.manager=ManagerAgent(agent)
+    def __init__(self,agent):
+        self.manager=ManagerAgent(agent)
+        # Phase 15 — optional multi-agent layer. OFF by default; when the
+        # operator enables SECURE_AGENT_MULTI_AGENT_ENABLED the MultiAgentManager
+        # routes specialist delegation through the SAME central Registry,
+        # Control Center gates and audit trail. The single-agent ManagerAgent
+        # remains the fallback for every unrouted request and any failure.
+        from app.multi_agent import MultiAgentManager, build_roles
+        self.multi_agent=MultiAgentManager(agent,build_roles(agent.tools))
     async def run(self,request):
+        if _multi_agent_enabled():
+            try:
+                return await self.multi_agent.run(request)
+            except Exception as error:
+                # Fail closed visibly: record the refusal, then fall back to
+                # the stable single-agent path (never widen privileges).
+                await self.manager.core.memory.audit("multi_agent.fallback", {
+                    "reason": f"{type(error).__name__}: single-agent fallback"})
         result=await self.manager.run(AgentInput(request=request))
         roles=['manager',result.task.intent if result.task else 'unknown','reviewer','security']
         provider = getattr(self.manager.core.llm, 'active', getattr(self.manager.core.llm, 'name', type(self.manager.core.llm).__name__))
