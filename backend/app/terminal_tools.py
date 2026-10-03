@@ -106,7 +106,7 @@ class _TerminalExecuteBase(Tool):
     def _approved_tier(self) -> bool:
         raise NotImplementedError
 
-    async def run(self, args: dict[str, Any]) -> dict[str, Any]:
+    async def invoke(self, args: dict[str, Any]) -> dict[str, Any]:
         classification = self._guard(args)
         try:
             execution = await self.executor.execute(
@@ -293,7 +293,7 @@ class TerminalExecuteScript(Tool):
             out.append(line)
         return out
 
-    async def run(self, args: dict[str, Any]) -> dict[str, Any]:
+    async def invoke(self, args: dict[str, Any]) -> dict[str, Any]:
         content = args["content"]
         # Whole-script validation — fails closed.
         reasons, rules = self._validate_script(content)
@@ -358,7 +358,7 @@ class _FixedInspection(Tool):
     def argv(self) -> list[list[str]]:
         raise NotImplementedError
 
-    async def run(self, args: dict[str, Any]) -> dict[str, Any]:
+    async def invoke(self, args: dict[str, Any]) -> dict[str, Any]:
         sections: list[str] = []
         last_exit = 0
         last_execution = None
@@ -405,7 +405,7 @@ class TerminalWorkingDirectory(_FixedInspection):
         roots = self.executor.allowed_roots()
         return [["pwd"]]
 
-    async def run(self, args):  # override to include roots without shell
+    async def invoke(self, args):  # override to include roots without shell
         roots = [str(root) for root in self.executor.allowed_roots()]
         return {
             "command": ["(builtin) workspace report"],
@@ -543,7 +543,7 @@ class TerminalListDirectory(Tool):
         self.enabled = True
         self.disabled_reason = None
 
-    async def run(self, args: dict[str, Any]) -> dict[str, Any]:
+    async def invoke(self, args: dict[str, Any]) -> dict[str, Any]:
         directory = self.executor.resolve_cwd(args.get("path") or ".")
         entries: list[dict[str, Any]] = []
         truncated = False
@@ -596,7 +596,7 @@ class TerminalReadFile(Tool):
         self.enabled = True
         self.disabled_reason = None
 
-    async def run(self, args: dict[str, Any]) -> dict[str, Any]:
+    async def invoke(self, args: dict[str, Any]) -> dict[str, Any]:
         raw = args["path"]
         if "\x00" in raw or len(raw) > 4096:
             raise ValueError("invalid path")
@@ -645,7 +645,7 @@ class TerminalSearchFiles(Tool):
         self.enabled = True
         self.disabled_reason = None
 
-    async def run(self, args: dict[str, Any]) -> dict[str, Any]:
+    async def invoke(self, args: dict[str, Any]) -> dict[str, Any]:
         import fnmatch
         base = self.executor.resolve_cwd(args.get("path") or ".")
         pattern = args["query"].lower()

@@ -1,7 +1,7 @@
 import asyncio
 import json
 import re
-from abc import ABC, abstractmethod
+from abc import ABC
 from time import perf_counter
 from typing import Any
 
@@ -57,8 +57,42 @@ class Tool(ABC):
             platform=self.platforms or ["linux", "windows", "macos"],
         )
 
-    @abstractmethod
-    async def run(self, args: dict[str, Any]) -> dict[str, Any]: ...
+    async def invoke(self, args: dict[str, Any]) -> dict[str, Any]:
+        """Validated execution hook. Subclasses implement either ``invoke``
+        (preferred; receives fully schema-validated arguments with defaults
+        applied) or the legacy ``run`` entry point below. The registry always
+        calls :meth:`run`, which dispatches to exactly one implementation and
+        never recurses."""
+        if type(self).run is not Tool.run:
+            return await _call_legacy_run(self, args)
+        raise NotImplementedError(
+            f"{type(self).__name__} must implement 'invoke' or 'run'"
+        )
+
+    async def run(self, args: dict[str, Any]) -> dict[str, Any]:
+        """Public entry point: apply schema defaults before invoking.
+
+        ``invoke`` implementations may assume every declared input field is
+        present (defaults applied). Direct callers of ``run`` therefore get
+        the same validated shape as the registry pipeline enforces.
+
+        Backwards compatibility: subclasses (e.g. third-party plugins) that
+        still override ``run`` directly are honored as-is instead of recursing.
+        """
+        if type(self).invoke is not Tool.invoke:
+            return await self.invoke(self.input_model.model_validate(args).model_dump())
+        return await _call_legacy_run(self, args)
+
+
+async def _call_legacy_run(tool: "Tool", args: dict[str, Any]) -> dict[str, Any]:
+    """Invoke a subclass's legacy ``run`` override without recursion."""
+    for klass in type(tool).__mro__:
+        if klass is Tool:
+            continue
+        override = klass.__dict__.get("run")
+        if override is not None:
+            return await override(tool, args)
+    raise NotImplementedError(f"{type(tool).__name__} implements neither run nor invoke")
 
 
 class Registry:

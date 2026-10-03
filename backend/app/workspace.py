@@ -73,23 +73,32 @@ class WorkspacePolicy:
                 return True
         return False
 
+    def _is_bootstrap_write(self, parts: tuple[str, ...]) -> bool:
+        """True when writing *parts* creates a protected subtree for the
+        very first time (no file exists anywhere inside the protected root).
+
+        Bootstrap exception: initial creation of protected workspace areas
+        (memory/, knowledge/, ...) must succeed so the agent can seed them;
+        every mutation once any content exists requires an explicit override.
+        """
+        if not parts:
+            return False
+        protected_root = self.root.joinpath(parts[0])
+        if protected_root.is_file():
+            return False
+        if protected_root.is_dir() and any(protected_root.rglob("*")):
+            return False
+        return True
+
     def _guard_mutation(self, relative: str, allow_protected: bool) -> None:
         if allow_protected or not self.is_protected(relative):
             return
-        # Bootstrap exception: creating a protected subtree for the first
-        # time is allowed only when no file exists yet anywhere inside it.
         try:
             parts = self._parts(relative)
         except (ValueError, PermissionError):
             parts = ()
-        if parts:
-            candidate = self.root.joinpath(*parts)
-            if candidate.is_dir() and not any(candidate.rglob("*")):
-                return
-            if not candidate.exists():
-                root_of_path = self.root.joinpath(parts[0])
-                if root_of_path.is_dir() and not any(root_of_path.rglob("*")):
-                    return
+        if self._is_bootstrap_write(parts):
+            return
         raise PermissionError(
             "protected path requires explicit policy override"
         )

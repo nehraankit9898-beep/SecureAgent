@@ -127,7 +127,9 @@ def test_create_list_inspect_read_roundtrip(policy):
     entries = sorted(p.relative_to(policy.root).as_posix() for p in policy.walk_bounded("projects"))
     assert "projects/app/main.txt" in entries
     info = policy.inspect("projects/app/main.txt")
-    assert info["type"] == "file" and info["size"] == 10 and info["binary"] is False
+    # "print('hi')" is exactly 11 UTF-8 bytes; size must match the on-disk file.
+    assert info["type"] == "file" and info["size"] == 11 and info["binary"] is False
+    assert (policy.root / "projects/app/main.txt").stat().st_size == info["size"]
     text, truncated, raw = policy.read_text("projects/app/main.txt")
     assert text == "print('hi')" and not truncated
 
@@ -271,7 +273,9 @@ async def test_tool_level_flow(tools):
     purge = PurgeTrash(root)
 
     out = await write.run({"path": "notes/todo.txt", "content": "buy milk"})
-    assert out["bytes_written"] == 9
+    # "buy milk" is 8 UTF-8 bytes; report must match the on-disk file exactly.
+    assert out["bytes_written"] == len("buy milk".encode("utf-8")) == 8
+    assert (root / "notes/todo.txt").stat().st_size == out["bytes_written"]
     got = await read.run({"path": "notes/todo.txt"})
     assert got["content"] == "buy milk" and got["binary"] is False
 

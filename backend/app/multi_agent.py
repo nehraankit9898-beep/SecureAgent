@@ -57,7 +57,9 @@ class AgentRole(BaseModel):
     permissions: list[Permission] = Field(default_factory=list, max_length=8)
     max_steps: int = Field(4, ge=1, le=20)
     timeout_seconds: float = Field(90, gt=0, le=600)
-    token_budget: int = Field(120_000, ge=1_000, le=10_000_000)
+    # Zero is legal and means "no LLM budget at all" (Manager/Reviewer hold no
+    # execution surface); anything else is clamped to sane bounds.
+    token_budget: int = Field(120_000, ge=0, le=10_000_000)
     tool_call_budget: int = Field(6, ge=0, le=50)
     system_policy: str = Field(min_length=1, max_length=4000)
 
@@ -314,8 +316,8 @@ class MultiAgentManager:
         deterministic router — planning must never widen privileges."""
         from app.models import ChatRequest, Message
         role_lines = "\n".join(
-            f"- {name}: tools={roles[name].allowed_tools}" for name in ROLE_ORDER
-            if name not in {"manager", "reviewer"}
+            f"- {name}: tools={self.roles[name].allowed_tools}" for name in ROLE_ORDER
+            if name not in {"manager", "reviewer"} and name in self.roles
         )
         system = (
             "You are the SecureAgent manager router with no execution ability.\n"
