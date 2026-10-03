@@ -239,6 +239,35 @@ class Settings(BaseSettings):
     approval_mode: Literal["all", "high-risk"] = "high-risk"
     require_approval_for_high_risk: bool = True
 
+    # --- Phase 09: browser agent (Playwright) ------------------------------- #
+    # Master switch. OFF by default: no engine is started, no browser tool can
+    # run, and the catalog reports the tool as disabled with this reason.
+    browser_enabled: bool = False
+    browser_headless: bool = True
+    browser_max_sessions: int = Field(2, ge=1, le=8)
+    browser_max_pages_per_session: int = Field(4, ge=1, le=16)
+    browser_session_ttl_seconds: int = Field(600, ge=30, le=7_200)
+    browser_session_idle_seconds: int = Field(300, ge=30, le=3_600)
+    browser_navigation_timeout_seconds: float = Field(30, gt=0, le=180)
+    browser_action_timeout_seconds: float = Field(20, gt=0, le=120)
+    browser_max_snapshot_chars: int = Field(20_000, ge=1_000, le=200_000)
+    browser_max_links: int = Field(60, ge=1, le=500)
+    browser_screenshot_max_bytes: int = Field(8_000_000, ge=10_000, le=50_000_000)
+    # Screenshots are never persisted unless this is explicitly enabled, and
+    # sensitive regions (screen_sensitive_regions) are masked first.
+    browser_screenshot_persist: bool = False
+    browser_allow_downloads: bool = False
+    browser_max_download_bytes: int = Field(5_000_000, ge=10_000, le=100_000_000)
+    browser_allow_uploads: bool = False
+    browser_max_upload_bytes: int = Field(2_000_000, ge=1_024, le=50_000_000)
+    # Optional allow list. Empty means "no browser-level allow list" and the
+    # Control Center network policy remains the authority.
+    browser_allowed_domains: list[str] = Field(default_factory=list)
+    # Sensitive browser actions (purchase/send/submit/delete/account/security/
+    # credential) always require an explicit approval. Setting this False does
+    # NOT allow them: it blocks them outright (fail closed).
+    browser_sensitive_actions_require_approval: bool = True
+
     # --- Phase 14: MCP & external integrations ------------------------------ #
     # Master kill switch for ALL external integrations (MCP servers and
     # provider connectors). OFF by default: with no configuration nothing in
@@ -400,6 +429,14 @@ class Settings(BaseSettings):
             self.block_cloud_metadata = False
         if self.require_approval_for_high_risk is False:
             raise ValueError("high-risk approval cannot be disabled")
+        # Browser downloads/uploads are opt-in and must stay inside the
+        # workspace jail; an enabled browser still cannot bypass the network
+        # policy because every navigation re-validates the destination.
+        for raw in self.browser_allowed_domains:
+            if not isinstance(raw, str) or not raw.strip() or len(raw) > 253:
+                raise ValueError("browser_allowed_domains entries must be 1-253 character hostnames")
+        self.browser_allowed_domains = [item.strip().lower()
+                                        for item in self.browser_allowed_domains if item.strip()]
         # terminal allowed paths must be absolute, existing, non-root directories
         normalized_paths: list[str] = []
         for raw in self.terminal_allowed_paths:

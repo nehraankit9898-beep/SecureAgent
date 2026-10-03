@@ -24,6 +24,10 @@ class PermissionManager:
             enabled, reason = False, "TERMINAL_TOOLS_DISABLED: Disabled in Settings"
         elif tool.category == "workflow" and not self.config.security_workflows_enabled:
             enabled, reason = False, "WORKFLOWS_DISABLED: Disabled in Settings"
+        elif tool.category == "browser" and not self.config.browser_enabled:
+            enabled, reason = False, "BROWSER_DISABLED: Browser automation is disabled in Settings"
+        elif tool.category == "voice" and not getattr(self.config, "voice_enabled", False):
+            enabled, reason = False, "VOICE_DISABLED: Voice is disabled in Settings"
         elif tool.name == "web_search" and not self.config.web_search_enabled:
             enabled, reason = False, "WEB_SEARCH_DISABLED: Disabled in Settings"
         elif tool.name == "http_request" and not self.config.http_requests_enabled:

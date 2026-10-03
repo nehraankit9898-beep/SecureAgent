@@ -21,6 +21,9 @@ from app.execution_registry import ExecutionRegistry
 from app.knowledge import KnowledgeStore
 from app.llm import LLMError, close_llm, get_llm
 from app.network_security import NetworkPolicyError, SafeHttpClient
+from app.browser.api import build_browser_router
+from app.browser.policy import BrowserPolicyError
+from app.browser.runtime import BrowserRuntime, set_browser_runtime
 from app.memory import MemoryStore
 from app.memory_service import MemoryService
 from app.models import AgentRequest, AuditClearIn, AutomationActionIn, ChatRequest, DocumentIn, DocumentSearch, ExecutionResponse, FilesystemPathIn, GrantIn, MemoryIn, MemoryItem, MemoryPatch, PermissionActionIn, PresetIn, ResumeRequest, ScheduleCreate, SchedulePatch, StepStatus, Task, TaskStatus, TerminalExecuteIn, ToolDef, ToolPatchIn
@@ -37,6 +40,16 @@ memory_service = MemoryService(store)
 # The desktop UI is only a control panel; this object owns the real switches.
 control_center = ControlCenter(config.database_path.parent / "control_center.json", store)
 set_control_center(control_center)
+# --- Phase 09 browser runtime (engine starts lazily on first session) ------ #
+browser_runtime = BrowserRuntime(config, store=store, control_center=control_center)
+set_browser_runtime(browser_runtime)
+
+
+async def _emergency_close_browser_sessions():
+    """EMERGENCY STOP: close every browser context (cookies/storage dropped)."""
+    return {"closed_sessions": await browser_runtime.close_all()}
+
+
 limiter = InMemoryRateLimiter({'default':config.rate_limit_default,'auth':config.rate_limit_auth,'chat':config.rate_limit_chat,'agent':config.rate_limit_agent,'tools':config.rate_limit_tools,'automation':config.rate_limit_automation},config.rate_limit_window_seconds,config.rate_limit_max_clients)
 automation: AutomationEngine | None = None
 session_approvals: dict[str, set] = {}
@@ -160,6 +173,7 @@ async def life(app):
     control_center.register_kill_switch("terminal", _emergency_kill_terminal)
     control_center.register_kill_switch("agent_tasks", _emergency_cancel_agent_tasks)
     control_center.register_kill_switch("automation", _emergency_cancel_automation)
+    control_center.register_kill_switch("browser", _emergency_close_browser_sessions)
     if control_center.recovery:
         await store.audit("control.recovered", control_center.recovery, actor="control-center")
     await store.audit("control.loaded", {
@@ -171,6 +185,7 @@ async def life(app):
     await control_center.on_backend_exit()
     if automation:
         await automation.close()
+    await browser_runtime.stop()
     await close_llm()
 
 
@@ -188,6 +203,21 @@ async def llm_error_handler(request: Request, error: LLMError):
 @app.exception_handler(NetworkPolicyError)
 async def network_error_handler(request: Request, error: NetworkPolicyError):
     return JSONResponse({"success":False,"error":{"code":error.code,"message":str(error),"details":{"component":"network","recovery_action":"Review Network settings and trusted endpoint policy."}},"request_id":request_id_var.get()}, status_code=403)
+
+@app.exception_handler(BrowserPolicyError)
+async def browser_policy_handler(request: Request, error: BrowserPolicyError):
+    """Structured, secret-safe browser refusal (approval, policy, engine)."""
+    approval = "APPROVAL_REQUIRED" in error.code or "APPROVAL_REQUIRED" in str(error)
+    status = 403 if not approval else 409
+    return JSONResponse({"success": False, "error": {
+        "code": error.code,
+        "message": str(error)[:500],
+        "details": {"component": "browser",
+                    "recovery_action": ("Approve the action in the Control Center and resend with "
+                                        "approval='APPROVE'." if approval else
+                                        "Review browser/network policy settings.")}},
+        "request_id": request_id_var.get()}, status_code=status)
+
 
 @app.exception_handler(RequestValidationError)
 async def validation_error_handler(request: Request, error: RequestValidationError):
@@ -239,6 +269,9 @@ async def security_middleware(request: Request, call_next):
             int((perf_counter() - started) * 1000),
         )
         request_id_var.reset(context)
+
+
+app.include_router(build_browser_router(config.api_prefix + "/browser"))
 
 
 @app.get(config.api_prefix + "/auth/status")

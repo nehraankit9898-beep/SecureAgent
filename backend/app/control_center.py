@@ -188,6 +188,34 @@ class WorkflowsControls(BaseModel):
     enabled: bool = True
 
 
+class BrowserControls(BaseModel):
+    """Phase 09 browser automation. OFF by default (spec: secure defaults).
+
+    ``sensitive_action_approval`` is MANDATORY and cannot be turned off: a
+    patch that sets it False is rejected by the ControlState validator, so a
+    purchase/send/delete/credential action can never lose its approval gate.
+    """
+    model_config = ConfigDict(extra="forbid")
+    enabled: bool = False
+    headless: bool = True
+    sensitive_action_approval: bool = True
+    downloads: bool = False
+    uploads: bool = False
+    max_sessions: int = Field(2, ge=1, le=8)
+
+
+class VoiceControls(BaseModel):
+    """Phase 11 voice I/O. OFF by default; push-to-talk is the default mode."""
+    model_config = ConfigDict(extra="forbid")
+    enabled: bool = False
+    push_to_talk: bool = True
+    wake_word_enabled: bool = False
+    microphone_permission: bool = False
+    stt_provider: str = Field("auto", max_length=64)
+    tts_provider: str = Field("auto", max_length=64)
+    speak_replies: bool = False
+
+
 class SecurityControls(BaseModel):
     model_config = ConfigDict(extra="forbid")
     # Every field below is MANDATORY. A patch that attempts to set any of
@@ -213,6 +241,8 @@ class ControlState(BaseModel):
     sudo: SudoControls = Field(default_factory=SudoControls)
     filesystem: FilesystemControls = Field(default_factory=FilesystemControls)
     ai: AIControls = Field(default_factory=AIControls)
+    browser: BrowserControls = Field(default_factory=BrowserControls)
+    voice: VoiceControls = Field(default_factory=VoiceControls)
     memory: MemoryControls = Field(default_factory=MemoryControls)
     rag: RAGControls = Field(default_factory=RAGControls)
     automation: AutomationControls = Field(default_factory=AutomationControls)
@@ -231,6 +261,10 @@ class ControlState(BaseModel):
             # Secure Mode mandates the restricted sandbox; disabling it
             # requires turning Secure Mode off first (explicit user action).
             raise ControlModelError("restricted terminal mode is mandatory while Secure Mode is active")
+        if self.browser.sensitive_action_approval is False:
+            # Mirrors MANDATORY_PROTECTIONS for the browser: the approval gate
+            # in front of purchase/send/delete/credential actions is permanent.
+            raise ControlModelError("browser sensitive-action approval cannot be disabled")
         if self.terminal.allow_sudo and self.sudo.mode == "disabled":
             # Terminal-level sudo toggle requires the master sudo switch to
             # permit at least approval-gated usage.
@@ -240,7 +274,8 @@ class ControlState(BaseModel):
     # -- merge-patch -------------------------------------------------------- #
 
     SECTIONS: ClassVar[tuple[str, ...]] = ("agent", "terminal", "host_control", "network", "sudo",
-                                           "filesystem", "ai", "memory", "rag", "automation", "workflows", "security")
+                                           "filesystem", "ai", "browser", "voice", "memory", "rag",
+                                           "automation", "workflows", "security")
 
     @classmethod
     def apply_patch(cls, base: "ControlState", patch: dict[str, Any]) -> "ControlState":
@@ -672,6 +707,27 @@ class ControlCenter:
             "context_size": state.context_size,
             "max_tokens": state.max_tokens,
         }
+
+    def browser_active(self) -> bool:
+        return (not self.emergency_stopped and self.state.browser.enabled
+                and self.state.agent.enabled)
+
+    def browser_limits(self) -> dict[str, Any]:
+        state = self.state.browser
+        return {"headless": state.headless, "max_sessions": state.max_sessions,
+                "downloads": state.downloads, "uploads": state.uploads,
+                "sensitive_action_approval": state.sensitive_action_approval}
+
+    def voice_active(self) -> bool:
+        return (not self.emergency_stopped and self.state.voice.enabled
+                and self.state.voice.microphone_permission)
+
+    def voice_limits(self) -> dict[str, Any]:
+        state = self.state.voice
+        return {"push_to_talk": state.push_to_talk, "wake_word_enabled": state.wake_word_enabled,
+                "stt_provider": state.stt_provider, "tts_provider": state.tts_provider,
+                "speak_replies": state.speak_replies,
+                "microphone_permission": state.microphone_permission}
 
     def memory_active(self) -> bool:
         return not self.emergency_stopped and self.state.memory.enabled
