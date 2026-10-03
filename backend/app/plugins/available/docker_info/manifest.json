@@ -1,0 +1,11 @@
+{
+  "name": "docker_info",
+  "version": "1.0.0",
+  "description": "Read-only Docker inventory tool (docker --version, images, ps) via the Linux terminal executor.",
+  "module": "plugin",
+  "tools": ["docker_inspect"],
+  "permissions": ["execute"],
+  "risk_levels": {"docker_inspect": "low"},
+  "platforms": ["linux"],
+  "enabled": false
+}

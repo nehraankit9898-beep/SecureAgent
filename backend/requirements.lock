@@ -1,0 +1,9 @@
+# Exact direct-dependency lock for deterministic application installs.
+# Re-resolve and vulnerability-scan these pins before production deployment.
+fastapi==0.115.12
+httpx==0.28.1
+pydantic==2.12.0
+pydantic-settings==2.10.0
+uvicorn[standard]==0.34.2
+pypdf==5.6.0
+python-docx==1.1.2

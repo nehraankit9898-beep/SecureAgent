@@ -1,0 +1,32 @@
+services:
+  api:
+    build: .
+    ports: ["127.0.0.1:8000:8000"]
+    environment:
+      SECURE_AGENT_ENVIRONMENT: production
+      SECURE_AGENT_AUTH_REQUIRED: "true"
+      SECURE_AGENT_API_TOKEN: ${SECURE_AGENT_API_TOKEN:?Set a strong token of at least 32 characters}
+      # Ollama defaults to loopback inside the container, where no Ollama service
+      # runs; the dashboard still works through the built-in deterministic local
+      # core. Pointing the backend at a host-side Ollama is a *remote* Ollama
+      # endpoint by policy: it requires BOTH
+      #   SECURE_AGENT_ALLOW_REMOTE_OLLAMA: "true"   (explicit data-egress approval)
+      # and an HTTPS base URL (plain HTTP is rejected by Settings validation).
+      # Example:
+      #   SECURE_AGENT_OLLAMA_BASE_URL: https://ollama.internal.example:11434
+      #   SECURE_AGENT_ALLOW_REMOTE_OLLAMA: "true"
+      # The previously shipped default (http://host.docker.internal:11434)
+      # failed validation and crashed the backend at startup.
+      SECURE_AGENT_DATABASE_PATH: /app/data/secure_agent.db
+      SECURE_AGENT_WORKSPACE_ROOT: /app/workspace
+      SECURE_AGENT_PYTHON_EXECUTION_BACKEND: disabled
+    volumes: ["./data:/app/data", "./workspace:/app/workspace"]
+    extra_hosts: ["host.docker.internal:host-gateway"]
+    restart: unless-stopped
+    read_only: true
+    tmpfs: ["/tmp:size=32m,noexec,nosuid"]
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+    pids_limit: 256
+    mem_limit: 1g
+    cpus: 2.0

@@ -1,0 +1,165 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta http-equiv="Content-Security-Policy"
+        content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'none'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'" />
+  <title>SecureAgent Control Center</title>
+  <link rel="stylesheet" href="control-center.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <div class="brand-mark">SA</div>
+      <div>
+        <h1>SecureAgent</h1>
+        <div class="brand-sub">Control Center</div>
+      </div>
+    </div>
+    <div class="top-status">
+      <span id="pill-backend" class="pill pill-muted">BACKEND …</span>
+      <span id="pill-secure" class="pill pill-muted">SECURE MODE …</span>
+      <span id="pill-sync" class="pill pill-hidden" title="Configuration synchronized with the backend">SYNCED</span>
+    </div>
+    <div class="top-actions">
+      <button id="btn-dashboard" class="btn btn-ghost" type="button">Open Dashboard</button>
+      <button id="btn-advanced" class="btn btn-ghost" type="button" aria-expanded="false">Advanced Settings</button>
+    </div>
+  </header>
+
+  <main>
+    <!-- ===================== MAIN SCREEN (one-click) ===================== -->
+    <section id="main-screen" class="panel" aria-label="Master controls">
+      <div class="switch-grid" id="master-grid">
+        <!-- rows rendered by control-center.js from the backend config -->
+      </div>
+
+      <div class="presets" aria-label="One-click presets">
+        <div class="presets-title">Presets</div>
+        <div class="presets-row">
+          <button class="btn btn-preset" data-preset="safe" type="button">SAFE MODE</button>
+          <button class="btn btn-preset" data-preset="development" type="button">DEVELOPMENT MODE</button>
+          <button class="btn btn-preset" data-preset="security_lab" type="button">SECURITY LAB MODE</button>
+          <button class="btn btn-preset btn-preset-warn" data-preset="full_control" type="button">FULL CONTROL MODE</button>
+        </div>
+      </div>
+
+      <div class="stop-row">
+        <button id="btn-emergency" class="btn-emergency" type="button">EMERGENCY STOP</button>
+      </div>
+    </section>
+
+    <!-- ===================== ADVANCED SETTINGS ===================== -->
+    <section id="advanced-screen" class="panel advanced" hidden aria-label="Advanced settings">
+      <div class="advanced-head">
+        <h2>Advanced Settings</h2>
+        <div class="apply-row">
+          <span id="staged-note" class="staged-note"></span>
+          <span id="apply-state" class="apply-state" role="status"></span>
+          <button id="btn-apply" class="btn btn-primary" type="button" disabled>Apply Changes</button>
+          <button id="btn-discard" class="btn btn-ghost" type="button" disabled>Discard</button>
+        </div>
+      </div>
+
+      <!-- Terminal -->
+      <details class="adv-group" open>
+        <summary>TERMINAL</summary>
+        <div class="adv-body" id="adv-terminal"></div>
+      </details>
+
+      <!-- Host Control -->
+      <details class="adv-group">
+        <summary>HOST CONTROL</summary>
+        <div class="adv-body" id="adv-hostcontrol"></div>
+      </details>
+
+      <!-- AI / Ollama -->
+      <details class="adv-group">
+        <summary>AI ENGINE / OLLAMA</summary>
+        <div class="adv-body" id="adv-ai"></div>
+      </details>
+
+      <!-- Memory / RAG -->
+      <details class="adv-group">
+        <summary>MEMORY / RAG</summary>
+        <div class="adv-body" id="adv-memory"></div>
+      </details>
+
+      <!-- Automation -->
+      <details class="adv-group">
+        <summary>AUTOMATION</summary>
+        <div class="adv-body" id="adv-automation"></div>
+      </details>
+
+      <!-- Filesystem -->
+      <details class="adv-group">
+        <summary>FILESYSTEM</summary>
+        <div class="adv-body" id="adv-filesystem"></div>
+      </details>
+
+      <!-- Tools -->
+      <details class="adv-group">
+        <summary>TOOLS</summary>
+        <div class="adv-body" id="adv-tools"></div>
+      </details>
+
+      <!-- Security -->
+      <details class="adv-group">
+        <summary>SECURITY POLICY</summary>
+        <div class="adv-body" id="adv-security"></div>
+      </details>
+
+      <!-- Audit -->
+      <details class="adv-group">
+        <summary>AUDIT LOG</summary>
+        <div class="adv-body" id="adv-audit"></div>
+      </details>
+    </section>
+
+    <!-- ===================== STATUS CARDS ===================== -->
+    <section class="panel status-panel" aria-label="Live system status">
+      <div class="status-head">
+        <h2>System Status</h2>
+        <div id="automation-jobs" class="jobs-line"></div>
+      </div>
+      <div class="status-grid" id="status-grid"></div>
+      <div id="network-info" class="network-info"></div>
+    </section>
+  </main>
+
+  <footer class="footbar">
+    <span id="revision-line">configuration revision —</span>
+    <span id="foot-note" class="foot-note">The backend is the security authority. The AI can never change these controls.</span>
+  </footer>
+
+  <!-- ===================== EMERGENCY STOP OVERLAY ===================== -->
+  <div id="stopped-overlay" class="overlay" hidden role="alertdialog" aria-labelledby="stopped-title">
+    <div class="stopped-box">
+      <div class="stopped-badge">SECUREAGENT STOPPED</div>
+      <p>Running agent tasks were cancelled, terminal processes were killed,
+         network tool access is blocked, and autonomous execution is disabled.
+         Audit logs are preserved.</p>
+      <button id="btn-resume" class="btn btn-resume" type="button">RESUME</button>
+    </div>
+  </div>
+
+  <!-- ===================== MODAL ===================== -->
+  <div id="modal" class="overlay" hidden role="dialog" aria-modal="true">
+    <div class="modal-box">
+      <h3 id="modal-title"></h3>
+      <p id="modal-body" class="modal-body"></p>
+      <div id="modal-input-row" class="modal-input-row" hidden>
+        <input id="modal-input" type="text" spellcheck="false" autocomplete="off" placeholder="/absolute/path" />
+      </div>
+      <div class="modal-actions">
+        <button id="modal-cancel" class="btn btn-ghost" type="button">Cancel</button>
+        <button id="modal-ok" class="btn btn-danger" type="button">Confirm</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="toast" class="toast" hidden></div>
+
+  <script src="control-center.js"></script>
+</body>
+</html>
