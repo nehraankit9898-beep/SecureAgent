@@ -1,6 +1,6 @@
-# Compiled/Binary files
+# Python
 __pycache__/
 *.pyc
 
-# Test artifacts
+# Test data and artifacts
 .pytest-data/
