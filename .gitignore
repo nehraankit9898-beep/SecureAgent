@@ -4,3 +4,19 @@ __pycache__/
 
 # Test data and state files
 .pytest-data/
+
+# Python environments
+.venv/
+venv/
+*.egg-info/
+
+# Node / frontend / desktop build output
+node_modules/
+frontend/dist/
+desktop/dist/
+build/
+*.tsbuildinfo
+
+# Local runtime state (databases, control center, logs)
+data/
+*.log

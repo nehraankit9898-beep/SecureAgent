@@ -315,6 +315,34 @@ def estimate_tokens(text: str) -> int:
     return max(1, len(text) // 4) if text else 0
 
 
+def _exhausted_budgets(spent: dict[str, int], budgets: MultiAgentBudgets,
+                       deadline: float) -> list[str]:
+    """Names of the budgets that are ALREADY exhausted right now.
+
+    Checked before launching a worker AND again after every finished worker:
+    a run whose last worker blew the token/tool-call ceiling (or the wall
+    clock) must terminate with ``MULTI_AGENT_BUDGET_EXCEEDED``. Checking only
+    before the next launch let that spend go unrecorded, so the run reported a
+    plain review rejection instead of an honest budget termination.
+    """
+    hit: list[str] = []
+    if time.monotonic() >= deadline:
+        hit.append("runtime")
+    if spent["tokens"] >= budgets.total_token_budget:
+        hit.append("tokens")
+    if spent["tool_calls"] >= budgets.total_tool_calls:
+        hit.append("tool_calls")
+    return hit
+
+
+def _record_budgets(budgets_hit: list[str], exceeded: list[str]) -> bool:
+    """Merge exhausted budget names into ``budgets_hit`` (no duplicates)."""
+    for name in exceeded:
+        if name not in budgets_hit:
+            budgets_hit.append(name)
+    return bool(exceeded)
+
+
 # --------------------------------------------------------------------------- #
 # Manager — routes; never executes                                            #
 # --------------------------------------------------------------------------- #
@@ -441,8 +469,20 @@ class MultiAgentManager:
                           request: AgentRequest, depth: int, budgets: MultiAgentBudgets,
                           spent: dict[str, int], deadline: float) -> tuple[WorkerReport, Task]:
         role = self.roles[name]
+        # Bound BEFORE any audit call: the fail-closed paths below audit too,
+        # and a late binding here used to raise UnboundLocalError exactly when
+        # delegation had to be refused (the noisiest possible failure mode).
+        store = self.core.memory
         scoped = self._scoped_core(role)
-        granted = (request.approved_permissions & set(role.permissions)) - {Permission.ADMIN}
+        # Privilege monotonicity: user-approved ∩ role permissions, minus ADMIN.
+        # SAFE is added to the *request* side because it is not an approval
+        # surface at all — the central pipeline never requires approval for a
+        # SAFE-only tool (``tool.permissions - {SAFE} <= granted``). Without it
+        # every request that approved nothing explicit (the API default) would
+        # deadlock in the blocked branch below and multi-agent could never run.
+        # This still can never widen past the role spec and never grants ADMIN.
+        granted = ((request.approved_permissions | {Permission.SAFE})
+                   & set(role.permissions)) - {Permission.ADMIN}
         # Fail closed: a worker delegated with NO usable permissions can only
         # ever produce unverified output; record an explicit blocked report
         # instead of running it (and never claim completion afterwards).
@@ -465,7 +505,6 @@ class MultiAgentManager:
         if remaining <= 0:
             raise asyncio.TimeoutError
         timeout = min(role.timeout_seconds, remaining, budgets.total_runtime_seconds)
-        store = self.core.memory
         await store.audit("multi_agent.delegated", {
             "session_id": state.session_id, "agent": name, "depth": depth,
             "permissions": sorted(permission.value for permission in granted),
@@ -533,7 +572,11 @@ class MultiAgentManager:
         notes: list[str] = []
         approved = True
         if not reports:
-            return False, ["no worker evidence was produced"]
+            approved = False
+            notes.append("no worker evidence was produced")
+            # NOTE: no early return — budget exhaustion must still be reported
+            # even when every worker was cancelled before reporting anything,
+            # otherwise the run hides the real reason it stopped.
         for report in reports:
             task = tasks_by_worker.get(report.agent)
             for step_id in report.evidence_step_ids:
@@ -577,12 +620,15 @@ class MultiAgentManager:
         })
 
         plan_model = await self._plan(request.message, request.conversation_id, request.model)
-        if plan_model is not None:
+        if plan_model is not None and plan_model.steps:
             workers = plan_model.steps
-            state.plan = list(workers)
         else:
+            # Planning is ADVISORY. An LLM plan that routes to nobody is a
+            # planning failure, not a routing decision — without this fallback
+            # a model returning {"steps": []} silently switched delegation off
+            # for every request (multi-agent looked enabled and did nothing).
             workers = self._route_deterministic(request.message)
-            state.plan = list(workers)
+        state.plan = list(workers)
         if not workers:
             # Nothing to delegate: keep the STABLE single-agent loop as-is.
             task = await self.core.run(request)
@@ -622,14 +668,7 @@ class MultiAgentManager:
             # budget checks BEFORE launching more work (fail closed). Only
             # *completed* workers count toward spend — an in-flight worker is
             # never double-charged and its cost is recorded when it finishes.
-            if time.monotonic() >= deadline:
-                budgets_hit.append("runtime")
-                break
-            if spent["tokens"] >= budgets.total_token_budget:
-                budgets_hit.append("tokens")
-                break
-            if spent["tool_calls"] >= budgets.total_tool_calls:
-                budgets_hit.append("tool_calls")
+            if _record_budgets(budgets_hit, _exhausted_budgets(spent, budgets, deadline)):
                 break
             while index < len(workers) and len(pending_tasks) < budgets.max_concurrent_workers:
                 pending_tasks.add(asyncio.create_task(worker(workers[index])))
@@ -669,6 +708,12 @@ class MultiAgentManager:
                     "session_id": session, "agent": name, "status": report.status,
                     "tool_calls": report.tool_calls, "tokens_est": report.tokens_est,
                     "evidence_steps": len(report.evidence_step_ids)})
+                # Re-check AFTER charging the finished worker, so the run's
+                # last worker cannot spend past a ceiling unnoticed.
+                if _record_budgets(budgets_hit, _exhausted_budgets(spent, budgets, deadline)):
+                    break
+            if budgets_hit:
+                break
 
         for handle in pending_tasks:
             handle.cancel()

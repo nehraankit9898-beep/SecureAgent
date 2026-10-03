@@ -144,7 +144,7 @@ curl http://127.0.0.1:8000/api/v1/audit?limit=50 | python -m json.tool
 ## Testing
 
 ```bash
-# Backend tests (355 pass, 0 fail, 31 skip with explicit
+# Backend tests (402 pass, 0 fail, 31 skip with explicit
 # "BLOCKED — environment requires bubblewrap" reasons where the full
 # sandbox profile is unavailable)
 cd backend && python -m pytest tests/ -q
@@ -159,9 +159,13 @@ cd desktop && node --test tests/*.test.js
 # Clean-start validation (9 YES, 0 NO)
 python scripts/clean_start_validation.py
 
-# E2E (backend)
+# E2E (backend) — 17 PASS / 12 BLOCKED / 0 FAIL; BLOCKED entries are the
+# environment-limited features (bwrap, Ollama, Docker) reported honestly
 python scripts/runtime_e2e.py
 ```
+
+> The counts above are the numbers measured on the last verification run. If
+> your run reports fewer passes, treat it as a regression, not as rounding.
 
 On this engineering pass every visible feature was re-verified against the real backend, six real defects were found and fixed (two of which made the desktop Control Center / packaged app dead on arrival — see `docs/AUDIT_REPORT.md`), and live integration runs exercised the full pipeline (31/31 endpoint checks, 13/13 real-execution checks).
 
@@ -198,6 +202,10 @@ Verified for:
 Limitations (BLOCKED on environment, not on code — the app reports each of these honestly at runtime):
 - Sandbox execution requires `bubblewrap` + unprivileged user namespaces (on Debian 13+ hosts where AppArmor restricts userns, see `docs/TROUBLESHOOTING.md`); RESTRICTED_AGENT fails closed with `LINUX_SANDBOX_UNAVAILABLE` and the policy engine offers HOST_CONTROL with explicit confirmation
 - Ollama is not installed here (the system honestly reports `NOT_INSTALLED`/`NOT_AVAILABLE` and falls back to `LocalCore`, which never fabricates AI answers)
+- Multi-agent delegation is wired, audited and fails closed, but a SUCCESSFUL
+  end-to-end delegation needs Ollama: without it workers cannot reason, so runs
+  end as `MULTI_AGENT_REVIEW_REJECTED` (the honest verdict, not a silent
+  single-agent fallback)
 - `memory.relevant()` is keyword-LIKE, not semantic (deferred)
 - RAG embeddings are JSON-stored with O(n) cosine (deferred)
 - `main.py` remains a large module (splitting deferred)

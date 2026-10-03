@@ -145,6 +145,17 @@ def main() -> int:
             memory_id = memory.get("id") if isinstance(memory, dict) else None
             record("Memory create", "PASS" if status == 201 and memory_id else "FAIL", memory)
 
+            # The Control Center is the runtime authority and automation ships
+            # OFF by default (fail closed), so a fresh state directory makes
+            # POST /schedules return AUTOMATION_DISABLED. Flip the switch the
+            # way a user would in the Control Center before testing scheduling,
+            # otherwise this check only passes on machines whose persisted
+            # control_center.json already had automation enabled.
+            request("/api/v1/config", port=server.port, method="PATCH", body={
+                "automation": {"enabled": True, "scheduled_tasks": True,
+                               "background_tasks": True},
+            })
+
             when = (datetime.now(UTC) + timedelta(seconds=3)).isoformat()
             status, schedule = request("/api/v1/schedules", port=server.port, method="POST", body={
                 "name": "runtime calculator", "prompt": "calculate 9*9", "kind": "once",

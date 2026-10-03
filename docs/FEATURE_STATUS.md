@@ -51,6 +51,30 @@ Status legend:
 | Ollama NOT_INSTALLED when binary missing | VERIFIED | yes | `test_diagnostics_ollama_honest_when_not_installed` | never reports ENABLED when broken |
 | Version bumped to 2.0.0 | VERIFIED | yes | `test_health_returns_version_2_0_0` | `FastAPI(version="2.0.0")` + `/health` |
 
+### Phase 15 — multi-agent architecture (opt-in)
+
+Off by default (`SECURE_AGENT_MULTI_AGENT_ENABLED`); when on, `/orchestrate` routes
+specialist work through `app.multi_agent.MultiAgentManager`. Re-verified on
+2026-10-03: three real defects found by running (not reading) the suite were
+fixed — delegation crashed on the fail-closed path, budgets were only checked
+before the next launch, and an empty LLM plan silently disabled delegation.
+
+| Feature | Status | Tested | Evidence | Notes |
+|---|---|---|---|---|
+| Six narrow roles (manager/researcher/browser/coding/computer_use/reviewer) | VERIFIED | yes | `test_six_roles_exist_and_are_narrow`; `GET /api/v1/agents/roles` live | tools intersected with the LIVE registry |
+| Role schema rejects ADMIN / unknown tools / extra fields | VERIFIED | yes | `test_role_schema_rejects_admin_and_unknown_shapes` | frozen, `extra='forbid'` |
+| No privilege escalation on delegation | VERIFIED | yes | `test_subagent_cannot_escalate_permissions` | user-approved ∩ role, minus ADMIN |
+| No inheritance of "always allow" grants | VERIFIED | yes | `test_persistent_always_allow_grants_do_not_leak_to_workers` | empty `persistent_permissions` |
+| Refused delegation is audited (fail-closed) | VERIFIED | yes | `test_delegation_without_permissions_is_audited_not_crashed` | fixed: used to raise `UnboundLocalError` instead of auditing |
+| Budget exhaustion terminates safely | VERIFIED | yes | `test_runtime_budget_exhaustion_terminates_safely`; `test_token_budget_exhaustion_refuses_completion` | fixed: checked after every worker, not only before the next launch |
+| Budgets clamped to platform ceilings | VERIFIED | yes | `test_budgets_clamped_from_config` | depth ≤ 4, runtime ≤ 900s, tool calls ≤ 50, workers ≤ 4 |
+| Reviewer rejects unbacked evidence | VERIFIED | yes | `test_reviewer_rejects_fabricated_evidence` | evidence must be a centrally-executed success |
+| Deterministic audit trail | VERIFIED | yes | `test_multi_agent_audit_trail_is_deterministic` | `started → delegated → worker_finished → reviewed → finished` |
+| Empty LLM plan falls back to deterministic router | VERIFIED | yes | `test_empty_llm_plan_falls_back_to_deterministic_router` | fixed: planning is advisory, it must not switch delegation off |
+| Control Center master switch OFF stops delegation | VERIFIED | yes | `test_control_center_master_switch_off_stops_delegation` | nothing delegated, `AGENT_DISABLED_BY_CONTROL_CENTER` |
+| Unrouted requests keep the single-agent loop | VERIFIED | yes | `test_nothing_to_delegate_keeps_single_agent_loop` | stable path unchanged |
+| Live wiring (real backend, real registry) | PARTIALLY VERIFIED | yes | live `/api/v1/orchestrate` run recorded `multi_agent.started → delegated → worker_finished → reviewed → finished` | BLOCKED on Ollama for a *successful* delegation; fails closed with `MULTI_AGENT_REVIEW_REJECTED` |
+
 ## C. Frontend features
 
 | Feature | Status | Tested | Evidence | Notes |
@@ -83,12 +107,12 @@ Status legend:
 
 | Test suite | Status | Tests | Evidence |
 |---|---|---|---|
-| Backend unit/integration (`backend/tests/*.py`) | VERIFIED | 320 pass, 22 fail (all bwrap), 10 skip | `pytest tests/ -q` |
+| Backend unit/integration (`backend/tests/*.py`) | VERIFIED | 402 pass, 0 fail, 31 skip (all bwrap-blocked) | `pytest tests/ -q` |
 | New 2.0 tests (`test_secureagent_2.py`) | VERIFIED | 19 pass, 0 fail | `pytest tests/test_secureagent_2.py -v` |
-| Frontend contract (`frontend/tests/*.mjs`) | VERIFIED | 9 pass, 0 fail | `npm test` |
-| Desktop unit (`desktop/tests/*.js`) | VERIFIED | 21 tests pass | `desktop/tests/desktop.test.js` + `control-center.test.js` |
+| Frontend contract (`frontend/tests/*.mjs`) | VERIFIED | 12 pass, 0 fail | `npm test` |
+| Desktop unit (`desktop/tests/*.js`) | VERIFIED | 35 tests pass | `desktop/tests/*.test.js` (incl. trust-gate + orphan-reap) |
 | Clean-start validation | VERIFIED | 9 YES, 0 NO | `scripts/clean_start_validation.py` |
-| E2E (backend) | VERIFIED | yes | `scripts/runtime_e2e.py` (213 lines) |
+| E2E (backend) | VERIFIED | 17 PASS, 12 BLOCKED, 0 FAIL | `scripts/runtime_e2e.py` |
 | E2E (control center) | VERIFIED | yes | `scripts/control_center_live_verification.py` (422 lines) |
 | E2E (Electron renderer) | NOT VERIFIED | no | deferred — see audit §3.4 |
 
@@ -104,7 +128,7 @@ The verification was performed in a sandboxed Linux environment with:
 
 Tests that require Ollama, bwrap, or Docker report `NOT_AVAILABLE` rather than `PASS`. This is the correct, honest behavior — it matches the 2.0 principle of "never fake status".
 
-On a real Linux host with bwrap installed (e.g., `apt install bubblewrap`), the 22 currently-failing tests are expected to pass. On a host with Ollama installed and models pulled, the ollama diagnostic will report `PASS` and the agent will use generative reasoning instead of the LocalCore fallback.
+On a real Linux host with bwrap installed (e.g., `apt install bubblewrap`), the 31 currently-skipped (BLOCKED) tests are expected to pass. On a host with Ollama installed and models pulled, the ollama diagnostic will report `PASS` and the agent will use generative reasoning instead of the LocalCore fallback.
 
 ## G. Release readiness
 
@@ -123,7 +147,7 @@ The 2.0 transformation is complete and verified for:
 - 19 new tests + 9-question clean-start validation
 
 Limitations (BLOCKED on environment, not on code):
-- 22 backend tests fail because bwrap is not installed in this sandbox (they pass on a real Linux host)
+- 31 backend tests are skipped (BLOCKED — "environment requires bubblewrap") because bwrap is not installed in this sandbox; they fail closed with an explicit reason rather than a fake pass, and pass on a real Linux host
 - Ollama is not installed (the system honestly reports NOT_INSTALLED and falls back to LocalCore)
 - Docker is not installed (python_sandbox is NOT_AVAILABLE)
 - No Electron-level E2E test (deferred)

@@ -99,8 +99,37 @@ def _worker_task(answer="done", successful_steps=1, status=TaskStatus.DONE):
     return build
 
 
-def _manager(script=None, tool_names=("web_search", "read_file")):
+def _patch_agent_loop(monkeypatch, core):
+    """Substitute the production single-agent loop for a scripted double.
+
+    ``MultiAgentManager`` deliberately builds every specialist through a LATE
+    lookup of ``app.agent.Agent`` — the only execution engine — so each worker
+    gets a fresh loop over a role-scoped registry, its own step/timeout limits
+    and its own planner context. Tests therefore have to replace that lookup
+    (not the injected core's ``run``) for worker behaviour to be deterministic
+    without an LLM.
+    """
+
+    class ScriptedAgent:
+        def __init__(self, *args, **kwargs):
+            self.kwargs = kwargs
+
+        async def run(self, request):
+            if core.script is not None:
+                return core.script(request)
+            task = Task(goal=request.message)
+            task.status = TaskStatus.DONE
+            task.answer = "ok"
+            return task
+
+    import app.agent as agent_module
+    monkeypatch.setattr(agent_module, "Agent", ScriptedAgent)
+
+
+def _manager(script=None, tool_names=("web_search", "read_file"), monkeypatch=None):
     core = FakeCoreAgent(tool_names=tool_names, script=script)
+    if monkeypatch is not None:
+        _patch_agent_loop(monkeypatch, core)
     return MultiAgentManager(core, build_roles(core.tools)), core
 
 
@@ -119,6 +148,13 @@ def _patch_settings(monkeypatch, **overrides):
     monkeypatch.setenv("SECURE_AGENT_ENV_FILE", "/nonexistent.env")
     for key, value in values.items():
         monkeypatch.setenv(key, value)
+    # ``app.config.settings`` is lru_cached process-wide, so setting env vars
+    # alone never reaches MultiAgentBudgets — it would keep reading whatever
+    # Settings was built first (conftest's). Bind a freshly built Settings into
+    # the module under test; monkeypatch restores the original after the test.
+    from app.config import Settings
+    fresh = Settings()
+    monkeypatch.setattr("app.multi_agent.settings", lambda: fresh)
 
 
 # --------------------------------------------------------------------------- #
@@ -194,10 +230,17 @@ def test_worker_output_is_wrapped_untrusted_and_flags_injection():
 
 
 def test_budgets_clamped_from_config():
-    budgets = MultiAgentBudgets(Settings(SECURE_AGENT_MAX_AGENT_DEPTH=99,
-                                         SECURE_AGENT_MULTI_AGENT_MAX_CONCURRENT_WORKERS=99,
-                                         SECURE_AGENT_MULTI_AGENT_MAX_TOOL_CALLS=9999,
-                                         SECURE_AGENT_AGENT_TIMEOUT_SECONDS=99999))
+    # model_construct bypasses pydantic validation on purpose: the point of
+    # MultiAgentBudgets is that a raw over-limit configuration value (from any
+    # source that is not a validated Settings) still clamps to the platform
+    # ceiling instead of being trusted. Note the field names carry no
+    # SECURE_AGENT_ prefix — Settings(extra="ignore") would silently drop the
+    # prefixed names and hand back defaults, hiding the clamp entirely.
+    budgets = MultiAgentBudgets(Settings.model_construct(
+        max_agent_depth=99,
+        multi_agent_max_concurrent_workers=99,
+        multi_agent_max_tool_calls=9999,
+        agent_timeout_seconds=99999))
     assert budgets.max_depth == 4
     assert budgets.max_concurrent_workers == 4
     assert budgets.total_tool_calls == 50
@@ -229,7 +272,7 @@ async def test_subagent_cannot_escalate_permissions(monkeypatch):
 
         async def run(self, request):
             captured["request"] = request
-            captured["planner_context"] = kwargs.get("planner_context", "")
+            captured["planner_context"] = self.kwargs.get("planner_context", "")
             task = Task(goal=request.message)
             task.status = TaskStatus.DONE
             task.answer = "ok"
@@ -289,11 +332,15 @@ async def test_persistent_always_allow_grants_do_not_leak_to_workers(monkeypatch
 async def test_runtime_budget_exhaustion_terminates_safely(monkeypatch):
     _patch_settings(monkeypatch, agent_timeout_seconds=5)
 
-    async def slow_run(request):
+    async def slow_run(name, *args, **kwargs):
+        # Must match the real _run_worker call signature: the manager invokes
+        # it as (name, instruction, state, request, depth, budgets, spent,
+        # deadline). A one-arg double used to raise TypeError before ever
+        # sleeping, so this test silently checked nothing.
         await asyncio.sleep(5)
         raise AssertionError("must have been cancelled")
 
-    manager, core = _manager(tool_names=("web_search",))
+    manager, core = _manager(tool_names=("web_search",), monkeypatch=monkeypatch)
     manager._run_worker = slow_run  # simulate a worker that blows its runtime
     response = await manager.run(AgentRequest(message="research the news"))
     assert response.response_type == "controlled_error"
@@ -316,7 +363,7 @@ async def test_token_budget_exhaustion_refuses_completion(monkeypatch):
                                                  output={"text": "x" * 40000})))
         return task
 
-    manager, core = _manager(script=huge_answer, tool_names=("web_search",))
+    manager, core = _manager(script=huge_answer, tool_names=("web_search",), monkeypatch=monkeypatch)
     response = await manager.run(AgentRequest(message="research the news"))
     assert response.error is not None
     assert response.error.error_code == MULTI_AGENT_BUDGET_CODE
@@ -342,7 +389,7 @@ async def test_recursion_depth_limit_fails_closed(monkeypatch):
 @pytest.mark.asyncio()
 async def test_reviewer_rejects_fabricated_evidence(monkeypatch):
     _patch_settings(monkeypatch)
-    manager, core = _manager(script=_worker_task(), tool_names=("web_search",))
+    manager, core = _manager(script=_worker_task(), tool_names=("web_search",), monkeypatch=monkeypatch)
 
     original_run_worker = manager._run_worker
 
@@ -365,7 +412,7 @@ async def test_failed_worker_blocks_completion(monkeypatch):
     _patch_settings(monkeypatch)
     manager, core = _manager(script=_worker_task(status=TaskStatus.FAILED,
                                                  successful_steps=0),
-                             tool_names=("web_search",))
+                             tool_names=("web_search",), monkeypatch=monkeypatch)
     response = await manager.run(AgentRequest(message="research the news"))
     assert response.status == TaskStatus.FAILED
     assert response.review_approved is False
@@ -379,7 +426,7 @@ async def test_failed_worker_blocks_completion(monkeypatch):
 @pytest.mark.asyncio()
 async def test_multi_agent_audit_trail_is_deterministic(monkeypatch):
     _patch_settings(monkeypatch)
-    manager, core = _manager(script=_worker_task(), tool_names=("web_search",))
+    manager, core = _manager(script=_worker_task(), tool_names=("web_search",), monkeypatch=monkeypatch)
     response = await manager.run(AgentRequest(message="research the news"))
     session = response.error.details.get("session_id") if response.error else None
     events = core.memory.events
@@ -403,7 +450,7 @@ async def test_multi_agent_audit_trail_is_deterministic(monkeypatch):
 @pytest.mark.asyncio()
 async def test_control_center_master_switch_off_stops_delegation(monkeypatch):
     _patch_settings(monkeypatch)
-    manager, core = _manager(script=_worker_task(), tool_names=("web_search",))
+    manager, core = _manager(script=_worker_task(), tool_names=("web_search",), monkeypatch=monkeypatch)
 
     class OffGate:
         def agent_active(self):
@@ -428,3 +475,51 @@ async def test_nothing_to_delegate_keeps_single_agent_loop(monkeypatch):
 def test_estimate_tokens_bounds():
     assert estimate_tokens("") == 0
     assert estimate_tokens("abcd") == 1
+
+
+# --------------------------------------------------------------------------- #
+# Regressions found while running this suite (kept as permanent guards)       #
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.asyncio()
+async def test_empty_llm_plan_falls_back_to_deterministic_router(monkeypatch):
+    """An LLM plan that names NO workers is a planning failure, not a decision
+    to delegate nothing. Planning is advisory: it must never be able to switch
+    delegation off silently (the symptom was multi-agent looking enabled while
+    every request quietly took the single-agent path)."""
+    _patch_settings(monkeypatch)
+    manager, core = _manager(script=_worker_task(), tool_names=("web_search",),
+                             monkeypatch=monkeypatch)
+
+    async def empty_plan(*args, **kwargs):
+        return DelegationPlan(objective="nothing to do", steps=[])
+
+    monkeypatch.setattr(manager, "_plan", empty_plan)
+    response = await manager.run(AgentRequest(message="research the news"))
+    events = [event for event, _ in core.memory.events]
+    assert "multi_agent.delegated" in events  # deterministic router took over
+    assert response.roles == ["manager", "researcher", "reviewer"]
+
+
+@pytest.mark.asyncio()
+async def test_delegation_without_permissions_is_audited_not_crashed(monkeypatch):
+    """Fail-closed refusal must be AUDITED. This branch used to touch the
+    local ``store`` before it was bound, so the exact moment delegation had to
+    be refused raised UnboundLocalError — the refusal was never recorded."""
+    _patch_settings(monkeypatch)
+    core = FakeCoreAgent(tool_names=("web_search",), script=_worker_task())
+    roles = build_roles(core.tools)
+    # A role without SAFE: a request that approved nothing has no usable
+    # intersection with it, so the worker must be refused, not run.
+    roles["researcher"] = AgentRole(name="researcher", description="d", system_policy="p",
+                                    allowed_tools=["web_search"],
+                                    permissions=[Permission.NETWORK])
+    manager = MultiAgentManager(core, roles)
+    response = await manager.run(AgentRequest(message="research the news"))
+    names = [event for event, _ in core.memory.events]
+    blocked = next(details for event, details in core.memory.events
+                   if event == "multi_agent.blocked")
+    assert blocked["reason"] == "no_permissions_after_intersection"
+    assert "multi_agent.delegated" not in names  # refused before delegation
+    assert response.review_approved is False
