@@ -127,6 +127,15 @@ class Settings(BaseSettings):
     network_rate_limit_per_minute: int = Field(20, ge=1, le=300)
     network_timeout_seconds: float = Field(12, gt=0, le=60)
     network_max_response_bytes: int = Field(1_000_000, ge=10_000, le=5_000_000)
+    # --- Computer Agent integration boundary (Phase 1 contracts) ----------- #
+    # Master feature flag for the future Computer Agent layer (screen/input/
+    # window/browser/voice). It is OFF by default and turning it on performs no
+    # OS action by itself: concrete providers do not exist until later phases,
+    # and every capability must still pass the existing permission/policy/
+    # approval pipeline. computer_agent_physical_input additionally gates
+    # mouse/keyboard synthesis and stays fail-closed in this release.
+    computer_agent_enabled: bool = False
+    computer_agent_physical_input: bool = False
     enable_automation: bool = False
     automation_require_approval: bool = True
     automation_max_concurrent_jobs: int = Field(2, ge=1, le=16)
