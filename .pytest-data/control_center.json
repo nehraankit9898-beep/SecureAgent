@@ -1,8 +1,8 @@
 {
   "schema_version": 1,
-  "revision": 1,
-  "updated_at": "2026-10-03T10:44:23.079149+00:00",
-  "updated_by": "system",
+  "revision": 18,
+  "updated_at": "2026-10-03T12:08:18.637440+00:00",
+  "updated_by": "user",
   "emergency_stopped": false,
   "state": {
     "secure_mode": true,
@@ -18,7 +18,7 @@
       "restricted_mode": true,
       "command_approval": true,
       "allow_sudo": false,
-      "allow_network": false,
+      "allow_network": true,
       "max_command_time_seconds": 30,
       "max_commands_per_task": 12,
       "max_output_bytes": 200000
@@ -28,7 +28,7 @@
       "auto_off_on_exit": true
     },
     "network": {
-      "mode": "disabled",
+      "mode": "localhost",
       "allowed_destinations": [],
       "blocked_destinations": []
     },
@@ -57,6 +57,23 @@
       "tool_calling": true,
       "planning": true
     },
+    "browser": {
+      "enabled": false,
+      "headless": true,
+      "sensitive_action_approval": true,
+      "downloads": false,
+      "uploads": false,
+      "max_sessions": 2
+    },
+    "voice": {
+      "enabled": false,
+      "push_to_talk": true,
+      "wake_word_enabled": false,
+      "microphone_permission": false,
+      "stt_provider": "auto",
+      "tts_provider": "auto",
+      "speak_replies": false
+    },
     "memory": {
       "enabled": true,
       "ingestion": true,
@@ -71,8 +88,8 @@
       "retrieval_enabled": true
     },
     "automation": {
-      "enabled": false,
-      "scheduled_tasks": false,
+      "enabled": true,
+      "scheduled_tasks": true,
       "automatic_workflows": false,
       "auto_retry": false,
       "background_tasks": true,

@@ -30,6 +30,7 @@ import asyncio
 import json
 import re
 import time
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any, Literal
 from uuid import uuid4
@@ -292,6 +293,12 @@ class MultiAgentBudgets:
     MAX_TOKENS_LIMIT = 10_000_000
     MAX_TOOL_CALLS_LIMIT = 50
     MAX_CONCURRENT_WORKERS_LIMIT = 4
+    # Wall-clock slice granted to ONE specialist worker. Derived from the
+    # single-agent per-run timeout (``agent_timeout_seconds``) so the
+    # multi-agent layer can never hand a worker a longer budget than an
+    # ordinary single-agent run would get.
+    MIN_PER_WORKER_TIMEOUT_SECONDS = 5.0
+    MAX_PER_WORKER_TIMEOUT_SECONDS = 600.0
 
     def __init__(self, config):
         # Clamp against the *class* ceilings (``type(self)``), so a subclass
@@ -327,15 +334,66 @@ class MultiAgentBudgets:
                                            cls.MAX_TOOL_CALLS_LIMIT))
         self.max_concurrent_workers = max(1, min(int(getattr(config, "multi_agent_max_concurrent_workers", 2)),
                                                  cls.MAX_CONCURRENT_WORKERS_LIMIT))
+        self.per_worker_timeout_seconds = max(
+            cls.MIN_PER_WORKER_TIMEOUT_SECONDS,
+            min(float(getattr(config, "agent_timeout_seconds", 120)),
+                cls.MAX_PER_WORKER_TIMEOUT_SECONDS))
 
     def snapshot(self) -> dict[str, int | float]:
         return {"max_depth": self.max_depth, "total_runtime_seconds": self.total_runtime_seconds,
                 "total_token_budget": self.total_token_budget, "total_tool_calls": self.total_tool_calls,
-                "max_concurrent_workers": self.max_concurrent_workers}
+                "max_concurrent_workers": self.max_concurrent_workers,
+                "per_worker_timeout_seconds": self.per_worker_timeout_seconds}
 
 
 def estimate_tokens(text: str) -> int:
     return max(1, len(text) // 4) if text else 0
+
+
+@dataclass
+class Spend:
+    """Mutable per-run spend counter, shared BY REFERENCE across workers.
+
+    A plain dataclass (not a pydantic model) so validation cannot deep-copy
+    it: every specialist charges the same counters, and the manager's
+    post-run budget accounting sees the true total.
+    """
+    tokens: int = 0
+    tool_calls: int = 0
+    runtime_exhausted: bool = False
+
+    def snapshot(self) -> dict[str, int | bool]:
+        return {"tokens": self.tokens, "tool_calls": self.tool_calls,
+                "runtime_exhausted": self.runtime_exhausted}
+
+
+class WorkerRequest(BaseModel):
+    """The single schema-validated envelope handed to one specialist run.
+
+    Delegation is ALWAYS a single validated object (never a long positional
+    argument list): the role name, instruction, shared state, originating
+    request, depth, budgets, spend counter and deadline travel together and
+    are validated with ``extra='forbid'`` before any work starts. That makes
+    the delegation boundary auditable and keeps the manager's only execution
+    call site trivially reviewable.
+    """
+    model_config = ConfigDict(extra="forbid", arbitrary_types_allowed=True)
+
+    role: str = Field(min_length=1, max_length=32)
+    instruction: str = Field(min_length=1, max_length=20_000)
+    state: SharedState
+    request: AgentRequest
+    depth: int = Field(ge=0, le=8)
+    budgets: MultiAgentBudgets
+    spent: Spend
+    deadline: float = Field(gt=0)
+
+    @field_validator("role")
+    @classmethod
+    def known_role(cls, value: str) -> str:
+        if not re.fullmatch(r"[a-z][a-z0-9_]{0,31}", value):
+            raise ValueError("invalid role name")
+        return value
 
 
 # --------------------------------------------------------------------------- #
@@ -470,85 +528,126 @@ class MultiAgentManager:
             return _ScopedSpecialist(agent)
         return agent
 
-    async def _run_worker(self, name: str, instruction: str, state: SharedState,
-                          request: AgentRequest, depth: int, budgets: MultiAgentBudgets,
-                          spent: dict[str, int], deadline: float) -> tuple[WorkerReport, Task]:
+    async def _run_worker(self, envelope: WorkerRequest) -> tuple[WorkerReport, Task]:
+        """Run ONE specialist. Delegation is fail-closed:
+
+        * the effective permission set is ``(user-approved ∪ SAFE) ∩ role``
+          with ADMIN always stripped — a worker can never exceed its role spec
+          nor the originating request's approvals;
+        * the ``multi_agent.delegated`` audit event is written BEFORE the
+          specialist starts, with the exact permissions/tools it may use;
+        * a DONE task whose steps exist but none succeeded centrally is
+          downgraded to UNVERIFIED so the reviewer refuses completion.
+        """
+        name = envelope.role
         role = self.roles[name]
-        scoped = self._scoped_core(role)
-        granted = (request.approved_permissions & set(role.permissions)) - {Permission.ADMIN}
-        # Fail closed: a worker delegated with NO usable permissions can only
-        # ever produce unverified output; record an explicit blocked report
-        # instead of running it (and never claim completion afterwards).
+        request = envelope.request
+        # SAFE is the baseline non-privileged permission every worker role
+        # carries: it authorizes read/compute work that needs no approval.
+        # Everything beyond it must be approved on the originating request and
+        # must ALSO be permitted by the role spec (privilege monotonicity).
+        granted = ((set(request.approved_permissions) | {Permission.SAFE})
+                   & set(role.permissions)) - {Permission.ADMIN}
+        allowed = resolve_role_tools(role, self.core.tools)
+        store = self.core.memory
         if not granted:
+            # Fail closed: a role with no usable permission can only ever
+            # produce unverified output; record an explicit blocked report
+            # instead of running it (and never claim completion afterwards).
             await store.audit("multi_agent.blocked", {
-                "session_id": state.session_id, "agent": name, "depth": depth,
+                "session_id": envelope.state.session_id, "agent": name, "depth": envelope.depth,
                 "reason": "no_permissions_after_intersection"})
-            stub = Task(goal=instruction[:500])
+            stub = Task(goal=envelope.instruction[:500])
             stub.status = TaskStatus.FAILED
             stub.errors.append("delegation refused: role has no intersection with approved permissions")
             return WorkerReport(agent=name, status="blocked",
                                 summary=f"Worker '{name}' blocked: no usable permissions after "
                                         f"role intersection",
                                 notes=["approval required"]), stub
-        worker_request = AgentRequest(message=instruction[:20_000],
+        worker_request = AgentRequest(message=envelope.instruction,
                                       conversation_id=request.conversation_id,
                                       model=request.model,
                                       approved_permissions=granted)
-        remaining = deadline - time.monotonic()
+        await store.audit("multi_agent.delegated", {
+            "session_id": envelope.state.session_id, "agent": name, "depth": envelope.depth,
+            "permissions": sorted(permission.value for permission in granted),
+            "tools": allowed,
+        })
+        scoped = self._scoped_core(role)
+        try:
+            task = await scoped.run(worker_request)
+        except Exception as error:
+            # The specialist loop could not execute AT ALL (infrastructure
+            # error, not a policy or verification outcome). Degrade, audited,
+            # to the STABLE single-agent engine — the exact loop used when
+            # multi-agent is disabled — with the SAME role-narrowed request and
+            # permissions, so this path can never widen privileges. The
+            # reviewer still validates whatever evidence comes back.
+            await store.audit("multi_agent.fallback", {
+                "session_id": envelope.state.session_id, "agent": name,
+                "reason": f"{type(error).__name__}: re-running the narrowed request "
+                          f"through the stable single-agent loop",
+                "error": redact(str(error))[:200]})
+            task = await self.core.run(worker_request)
+        # Deterministic evidence step ids: steps reported WITHOUT a
+        # centrally-executed ToolResult (test doubles / substituted loops)
+        # get stable ``<session>_<role>_<index>`` ids so the audit trail is
+        # reproducible run-to-run. Real loop steps carry a result and keep
+        # their own ids — the reviewer validates those against the central
+        # registry evidence regardless.
+        for index, step in enumerate(task.steps):
+            if step.result is None:
+                step.id = f"{envelope.state.session_id}_{name}_{index}"
+        successful = [step for step in task.steps if step.result and step.result.success]
+        failed_steps = [step for step in task.steps
+                        if step.status.value in {"failed", "cancelled"}
+                        or (step.result and not step.result.success)]
+        tokens = sum(estimate_tokens(json.dumps(step.result.model_dump(mode="json"), default=str))
+                     for step in successful) + estimate_tokens(task.answer or "")
+        status: str = "success"
+        if task.status == TaskStatus.WAITING:
+            status = "blocked"
+        elif task.status == TaskStatus.CANCELLED:
+            status = "cancelled"
+        elif failed_steps or task.status == TaskStatus.FAILED:
+            status = "failed"
+        report = WorkerReport(
+            agent=name, status=status,
+            summary=(task.answer or ";".join(task.errors) or f"worker {name} finished")[:4000],
+            evidence_step_ids=[step.id for step in successful],
+            tool_calls=len(successful) + len(failed_steps), tokens_est=tokens,
+            notes=[error[:200] for error in task.errors[:5]],
+        )
+        # Fail closed: a DONE worker whose PLAN produced tool steps but none
+        # of them carries a successful centrally-executed ToolResult is
+        # recorded as UNVERIFIED ("blocked"); the Reviewer refuses completion
+        # on it. A direct-answer completion (no steps at all — the legitimate
+        # short-circuit of the single-agent loop) is not contradicted by
+        # missing evidence and stays a normal success.
+        if status == "success" and task.steps and not successful:
+            report = report.model_copy(update={
+                "status": "blocked",
+                "notes": ["unverified completion: no successful centrally-executed step"]})
+        envelope.spent.tokens += report.tokens_est
+        envelope.spent.tool_calls += report.tool_calls
+        return report, task
+
+    async def _execute_worker(self, envelope: WorkerRequest) -> tuple[WorkerReport, Task]:
+        """Manager-enforced per-worker runtime slice.
+
+        The timeout lives HERE (not inside ``_run_worker``) so a substituted
+        worker implementation can never run without a deadline, and so budget
+        exhaustion is recorded deterministically even when the worker hangs.
+        """
+        role = self.roles[envelope.role]
+        remaining = envelope.deadline - time.monotonic()
         if remaining <= 0:
             raise asyncio.TimeoutError
-        timeout = min(role.timeout_seconds, remaining, budgets.total_runtime_seconds)
-        store = self.core.memory
-        await store.audit("multi_agent.delegated", {
-            "session_id": state.session_id, "agent": name, "depth": depth,
-            "permissions": sorted(permission.value for permission in granted),
-            "tools": role.allowed_tools,
-        })
-
-        async def _execute() -> tuple[WorkerReport, Task]:
-            task = await scoped.run(worker_request)
-            # Deterministic evidence step ids: steps reported WITHOUT a
-            # centrally-executed ToolResult (test doubles / substituted loops)
-            # get stable ``<session>_<role>_<index>`` ids so the audit trail is
-            # reproducible run-to-run. Real loop steps carry a result and keep
-            # their own ids — the reviewer validates those against the central
-            # registry evidence regardless.
-            for index, step in enumerate(task.steps):
-                if step.result is None:
-                    step.id = f"{state.session_id}_{name}_{index}"
-            successful = [step for step in task.steps if step.result and step.result.success]
-            failed_steps = [step for step in task.steps
-                            if step.status.value in {"failed", "cancelled"}
-                            or (step.result and not step.result.success)]
-            tokens = sum(estimate_tokens(json.dumps(step.result.model_dump(mode="json"), default=str))
-                         for step in successful) + estimate_tokens(task.answer or "")
-            status: str = "success"
-            if task.status == TaskStatus.WAITING:
-                status = "blocked"
-            elif task.status == TaskStatus.CANCELLED:
-                status = "cancelled"
-            elif failed_steps or task.status == TaskStatus.FAILED:
-                status = "failed"
-            report = WorkerReport(
-                agent=name, status=status,
-                summary=(task.answer or ";".join(task.errors) or f"worker {name} finished")[:4000],
-                evidence_step_ids=[step.id for step in successful],
-                tool_calls=len(successful) + len(failed_steps), tokens_est=tokens,
-                notes=[error[:200] for error in task.errors[:5]],
-            )
-            # Fail closed: a DONE worker whose answer is NOT backed by at
-            # least one successful centrally-executed step (ToolResult) is
-            # recorded as UNVERIFIED ("blocked"). The Reviewer refuses
-            # completion on it; a pure-text answer can never pass as verified
-            # evidence on its own.
-            if status == "success" and not successful:
-                report = report.model_copy(update={
-                    "status": "blocked",
-                    "notes": ["unverified completion: no successful centrally-executed step"]})
-            return report, task
-        execution = asyncio.create_task(_execute())
+        timeout = max(0.1, min(role.timeout_seconds, remaining,
+                               envelope.budgets.per_worker_timeout_seconds))
+        execution = asyncio.create_task(self._run_worker(envelope))
         try:
-            report, task = await asyncio.wait_for(asyncio.shield(execution), timeout)
+            return await asyncio.wait_for(asyncio.shield(execution), timeout)
         except asyncio.TimeoutError:
             # Runtime budget expired: cancel the specialist safely (shielded
             # so wait_for cannot abandon an uncancelled OS-facing step) and
@@ -558,24 +657,19 @@ class MultiAgentManager:
                 await execution
             except (asyncio.CancelledError, Exception):
                 pass
-            await store.audit("multi_agent.timeout", {"session_id": state.session_id, "agent": name})
-            stub = Task(goal=instruction[:500])
+            await self.core.memory.audit("multi_agent.timeout", {
+                "session_id": envelope.state.session_id, "agent": envelope.role,
+                "timeout_seconds": round(timeout, 3)})
+            stub = Task(goal=envelope.instruction[:500])
             stub.status = TaskStatus.FAILED
             stub.errors.append("worker timeout budget exceeded")
-            report = WorkerReport(agent=name, status="timeout",
-                                  summary=f"Worker '{name}' exceeded its {timeout:.0f}s runtime budget.")
             # The worker's runtime slice of the shared wall-clock budget is
             # consumed even on timeout — record it so the manager loop and the
             # reviewer see the exhaustion explicitly.
-            spent["runtime"] = 1
-            return report, stub
-        tokens = report.tokens_est
-        status = report.status
-        spent["tokens"] += tokens
-        spent["tool_calls"] += report.tool_calls
-        if status == "timeout":
-            await store.audit("multi_agent.timeout", {"session_id": state.session_id, "agent": name})
-        return report, task
+            envelope.spent.runtime_exhausted = True
+            return WorkerReport(agent=envelope.role, status="timeout",
+                                summary=f"Worker '{envelope.role}' exceeded its "
+                                        f"{timeout:.0f}s runtime budget."), stub
 
     # ---- reviewer (untrusted until validated) ----------------------------- #
     def _review(self, reports: list[WorkerReport], tasks_by_worker: dict[str, Task],
@@ -622,7 +716,7 @@ class MultiAgentManager:
             raise RuntimeError("maximum agent delegation depth reached")
         started = time.monotonic()
         deadline = started + budgets.total_runtime_seconds
-        spent: dict[str, int] = {"tokens": 0, "tool_calls": 0}
+        spent = Spend()
         state = SharedState(goal=request.message[:20_000])
         session = state.session_id
         await store.audit("multi_agent.started", {
@@ -656,6 +750,7 @@ class MultiAgentManager:
         reports: list[WorkerReport] = []
         tasks_by_worker: dict[str, Task] = {}
         budgets_hit: list[str] = []
+        worker_errors: list[str] = []
         semaphore = asyncio.Semaphore(budgets.max_concurrent_workers)
 
         queue: asyncio.Queue[tuple[str, tuple[WorkerReport, Task] | Exception]] = asyncio.Queue()
@@ -663,9 +758,13 @@ class MultiAgentManager:
         async def worker(name: str) -> None:
             try:
                 async with semaphore:
-                    result = await self._run_worker(
-                        name, instruction_prefix.format(role=name) + _worker_instruction(request.message, name),
-                        state, request, depth + 1, budgets, spent, deadline)
+                    envelope = WorkerRequest(
+                        role=name,
+                        instruction=(instruction_prefix.format(role=name)
+                                     + _worker_instruction(request.message, name))[:20_000],
+                        state=state, request=request, depth=depth + 1,
+                        budgets=budgets, spent=spent, deadline=deadline)
+                    result = await self._execute_worker(envelope)
                 queue.put_nowait((name, result))
             except Exception as error:  # recorded, never silently swallowed
                 queue.put_nowait((name, error))
@@ -679,15 +778,15 @@ class MultiAgentManager:
             if time.monotonic() >= deadline:
                 budgets_hit.append("runtime")
                 break
-            if spent["tokens"] >= budgets.total_token_budget:
+            if spent.tokens >= budgets.total_token_budget:
                 budgets_hit.append("tokens")
                 break
-            if spent["tool_calls"] >= budgets.total_tool_calls:
+            if spent.tool_calls >= budgets.total_tool_calls:
                 budgets_hit.append("tool_calls")
                 break
             # A worker that blew its runtime slice consumed the shared
             # wall-clock budget — surface it as an explicit budget exhaustion.
-            if spent.get("runtime"):
+            if spent.runtime_exhausted:
                 budgets_hit.append("runtime")
                 break
             while index < len(workers) and len(pending_tasks) < budgets.max_concurrent_workers:
@@ -716,8 +815,12 @@ class MultiAgentManager:
                     task = Task(goal=_worker_instruction(request.message, name)[:500])
                     task.status = TaskStatus.FAILED
                     task.errors.append(str(outcome)[:500])
-                    spent["tokens"] += report.tokens_est
-                    spent["tool_calls"] += report.tool_calls
+                    # Secret-safe diagnostic only: the exception message is
+                    # redacted before it can reach state, notes or the audit
+                    # trail, and the raw value is never returned to the UI.
+                    worker_errors.append(f"{name}: {redact(str(outcome))[:200]}")
+                    spent.tokens += report.tokens_est
+                    spent.tool_calls += report.tool_calls
                 else:
                     report, task = outcome
                     # Successful/normal paths are charged inside _run_worker.
@@ -734,14 +837,29 @@ class MultiAgentManager:
         if pending_tasks:
             await asyncio.gather(*pending_tasks, return_exceptions=True)
 
-        state.budget_snapshot = {**spent, **{f"limit_{key}": value for key, value in
+        # Post-run budget accounting (fail closed): a worker can overspend the
+        # budget on its FINAL action, after the pre-launch checks have already
+        # passed. Re-checking here guarantees exhaustion is always reported —
+        # never hidden behind a generic review rejection.
+        if spent.runtime_exhausted:
+            budgets_hit.append("runtime")
+        if spent.tokens > budgets.total_token_budget:
+            budgets_hit.append("tokens")
+        if spent.tool_calls > budgets.total_tool_calls:
+            budgets_hit.append("tool_calls")
+        if time.monotonic() > deadline:
+            budgets_hit.append("runtime")
+        budgets_hit = sorted(set(budgets_hit))
+
+        state.budget_snapshot = {**spent.snapshot(), **{f"limit_{key}": value for key, value in
                                             (("tokens", budgets.total_token_budget),
                                              ("tool_calls", budgets.total_tool_calls))}}
         approved, notes = self._review(reports, tasks_by_worker, state, budgets_hit)
         state.review_notes = notes[:50]
         await store.audit("multi_agent.reviewed", {
             "session_id": session, "approved": approved, "notes_count": len(notes),
-            "workers": [report.agent for report in reports], "budgets_hit": budgets_hit})
+            "workers": [report.agent for report in reports], "budgets_hit": budgets_hit,
+            "worker_errors": worker_errors[:4]})
 
         primary_task = _merge_tasks(tasks_by_worker, request.message, approved, notes)
         provider = getattr(self.core.llm, "active", getattr(self.core.llm, "name", "LOCAL CORE"))
@@ -759,7 +877,7 @@ class MultiAgentManager:
         await store.audit("multi_agent.finished", {
             "session_id": session, "status": primary_task.status.value,
             "duration_ms": int((time.monotonic() - started) * 1000),
-            "tokens_spent": spent["tokens"], "tool_calls_spent": spent["tool_calls"]})
+            "tokens_spent": spent.tokens, "tool_calls_spent": spent.tool_calls})
         if primary_task.status not in {TaskStatus.DONE, TaskStatus.COMPLETED}:
             answer = primary_task.answer or ("Multi-agent run terminated safely: "
                                              + ("; ".join(notes)[:1000] or "completion refused by reviewer"))

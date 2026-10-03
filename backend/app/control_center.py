@@ -144,6 +144,12 @@ class FilesystemControls(BaseModel):
     ])
 
 
+ROUTING_MODES = ("auto", "local_first", "cloud_first", "cost_aware", "speed_first",
+                 "privacy_first", "manual")
+ROUTING_ROUTES = ("chat", "planner", "coding", "vision", "security", "reviewer",
+                  "embedding", "fast")
+
+
 class AIControls(BaseModel):
     model_config = ConfigDict(extra="forbid")
     enabled: bool = True
@@ -154,6 +160,52 @@ class AIControls(BaseModel):
     max_tokens: int | None = Field(None, ge=128, le=131_072)
     tool_calling: bool = True
     planning: bool = True
+    # --- multi-model routing (Phase 13) ------------------------------------ #
+    # Remote/cloud providers stay OFF until the operator turns this on AND
+    # enables the same switch in Settings. Local providers (Ollama, or any
+    # provider whose base_url is loopback) are unaffected by this gate.
+    remote_providers_enabled: bool = False
+    routing_mode: Literal["auto", "local_first", "cloud_first", "cost_aware",
+                          "speed_first", "privacy_first", "manual"] = "local_first"
+    # Explicit per-route assignment as "<provider-id>:<model>". An assignment
+    # is honoured only when that provider is enabled+configured; otherwise the
+    # router falls back to the selected mode (never to an unconfigured vendor).
+    route_models: dict[str, str] = Field(default_factory=dict, max_length=32)
+    # Ordered provider preference for fallback. Providers not listed keep their
+    # mode-derived order and remain eligible after the listed ones.
+    fallback_chain: list[str] = Field(default_factory=list, max_length=16)
+
+    @field_validator("route_models")
+    @classmethod
+    def valid_route_models(cls, value: dict[str, str]) -> dict[str, str]:
+        for route, target in value.items():
+            if route not in ROUTING_ROUTES:
+                raise ValueError(f"unknown routing route: {route}")
+            if not isinstance(target, str) or not target.strip():
+                raise ValueError("route assignment must be '<provider>:<model>'")
+            if ":" not in target:
+                raise ValueError("route assignment must be '<provider>:<model>'")
+            provider_id = target.split(":", 1)[0]
+            if not provider_id or not all(character.islower() or character.isdigit()
+                                          or character in "._-"
+                                          for character in provider_id):
+                raise ValueError("route assignment provider id is invalid")
+        return value
+
+    @field_validator("fallback_chain")
+    @classmethod
+    def valid_fallback_chain(cls, value: list[str]) -> list[str]:
+        cleaned: list[str] = []
+        for item in value:
+            identifier = str(item).strip().lower()
+            if not identifier:
+                continue
+            if not all(character.islower() or character.isdigit() or character in "._-"
+                       for character in identifier):
+                raise ValueError("fallback chain entries must be provider ids")
+            if identifier not in cleaned:
+                cleaned.append(identifier)
+        return cleaned
 
 
 class MemoryControls(BaseModel):
@@ -188,6 +240,34 @@ class WorkflowsControls(BaseModel):
     enabled: bool = True
 
 
+class BrowserControls(BaseModel):
+    """Phase 09 browser automation. OFF by default (spec: secure defaults).
+
+    ``sensitive_action_approval`` is MANDATORY and cannot be turned off: a
+    patch that sets it False is rejected by the ControlState validator, so a
+    purchase/send/delete/credential action can never lose its approval gate.
+    """
+    model_config = ConfigDict(extra="forbid")
+    enabled: bool = False
+    headless: bool = True
+    sensitive_action_approval: bool = True
+    downloads: bool = False
+    uploads: bool = False
+    max_sessions: int = Field(2, ge=1, le=8)
+
+
+class VoiceControls(BaseModel):
+    """Phase 11 voice I/O. OFF by default; push-to-talk is the default mode."""
+    model_config = ConfigDict(extra="forbid")
+    enabled: bool = False
+    push_to_talk: bool = True
+    wake_word_enabled: bool = False
+    microphone_permission: bool = False
+    stt_provider: str = Field("auto", max_length=64)
+    tts_provider: str = Field("auto", max_length=64)
+    speak_replies: bool = False
+
+
 class SecurityControls(BaseModel):
     model_config = ConfigDict(extra="forbid")
     # Every field below is MANDATORY. A patch that attempts to set any of
@@ -213,6 +293,8 @@ class ControlState(BaseModel):
     sudo: SudoControls = Field(default_factory=SudoControls)
     filesystem: FilesystemControls = Field(default_factory=FilesystemControls)
     ai: AIControls = Field(default_factory=AIControls)
+    browser: BrowserControls = Field(default_factory=BrowserControls)
+    voice: VoiceControls = Field(default_factory=VoiceControls)
     memory: MemoryControls = Field(default_factory=MemoryControls)
     rag: RAGControls = Field(default_factory=RAGControls)
     automation: AutomationControls = Field(default_factory=AutomationControls)
@@ -231,6 +313,10 @@ class ControlState(BaseModel):
             # Secure Mode mandates the restricted sandbox; disabling it
             # requires turning Secure Mode off first (explicit user action).
             raise ControlModelError("restricted terminal mode is mandatory while Secure Mode is active")
+        if self.browser.sensitive_action_approval is False:
+            # Mirrors MANDATORY_PROTECTIONS for the browser: the approval gate
+            # in front of purchase/send/delete/credential actions is permanent.
+            raise ControlModelError("browser sensitive-action approval cannot be disabled")
         if self.terminal.allow_sudo and self.sudo.mode == "disabled":
             # Terminal-level sudo toggle requires the master sudo switch to
             # permit at least approval-gated usage.
@@ -240,7 +326,8 @@ class ControlState(BaseModel):
     # -- merge-patch -------------------------------------------------------- #
 
     SECTIONS: ClassVar[tuple[str, ...]] = ("agent", "terminal", "host_control", "network", "sudo",
-                                           "filesystem", "ai", "memory", "rag", "automation", "workflows", "security")
+                                           "filesystem", "ai", "browser", "voice", "memory", "rag",
+                                           "automation", "workflows", "security")
 
     @classmethod
     def apply_patch(cls, base: "ControlState", patch: dict[str, Any]) -> "ControlState":
@@ -672,6 +759,51 @@ class ControlCenter:
             "context_size": state.context_size,
             "max_tokens": state.max_tokens,
         }
+
+    def provider_routing(self) -> dict[str, Any]:
+        """Secret-free routing policy consumed by app.providers.ModelRouter.
+
+        Remote providers require BOTH the Settings switch and this Control
+        Center switch, so flipping either one OFF immediately stops egress.
+        """
+        state = self.state.ai
+        settings_allows = True
+        try:
+            from app.config import settings as _settings
+            settings_allows = bool(getattr(_settings(), "remote_providers_enabled", False))
+        except Exception:
+            settings_allows = False
+        return {
+            "remote_providers_enabled": bool(state.remote_providers_enabled and settings_allows),
+            "control_center_remote_switch": bool(state.remote_providers_enabled),
+            "settings_remote_switch": settings_allows,
+            "routing_mode": state.routing_mode,
+            "route_models": dict(state.route_models),
+            "fallback_chain": list(state.fallback_chain),
+            "ai_active": self.ai_active(),
+            "ollama_enabled": bool(state.ollama_enabled),
+        }
+
+    def browser_active(self) -> bool:
+        return (not self.emergency_stopped and self.state.browser.enabled
+                and self.state.agent.enabled)
+
+    def browser_limits(self) -> dict[str, Any]:
+        state = self.state.browser
+        return {"headless": state.headless, "max_sessions": state.max_sessions,
+                "downloads": state.downloads, "uploads": state.uploads,
+                "sensitive_action_approval": state.sensitive_action_approval}
+
+    def voice_active(self) -> bool:
+        return (not self.emergency_stopped and self.state.voice.enabled
+                and self.state.voice.microphone_permission)
+
+    def voice_limits(self) -> dict[str, Any]:
+        state = self.state.voice
+        return {"push_to_talk": state.push_to_talk, "wake_word_enabled": state.wake_word_enabled,
+                "stt_provider": state.stt_provider, "tts_provider": state.tts_provider,
+                "speak_replies": state.speak_replies,
+                "microphone_permission": state.microphone_permission}
 
     def memory_active(self) -> bool:
         return not self.emergency_stopped and self.state.memory.enabled

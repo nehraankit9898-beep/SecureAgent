@@ -145,11 +145,25 @@ def main() -> int:
             memory_id = memory.get("id") if isinstance(memory, dict) else None
             record("Memory create", "PASS" if status == 201 and memory_id else "FAIL", memory)
 
-            when = (datetime.now(UTC) + timedelta(seconds=3)).isoformat()
-            status, schedule = request("/api/v1/schedules", port=server.port, method="POST", body={
+            schedule_body = {
                 "name": "runtime calculator", "prompt": "calculate 9*9", "kind": "once",
-                "run_at": when, "allowed_tools": ["calculator"], "approved_permissions": [],
-            })
+                "run_at": (datetime.now(UTC) + timedelta(seconds=3)).isoformat(),
+                "allowed_tools": ["calculator"], "approved_permissions": [],
+            }
+            # The Control Center AUTOMATION master switch is a real backend
+            # gate with a secure default (OFF): prove the refusal first, then
+            # open the switch through the same public API the UI uses.
+            blocked_status, blocked = request("/api/v1/schedules", port=server.port,
+                                              method="POST", body=schedule_body)
+            gate_ok = blocked_status == 409 and "AUTOMATION_DISABLED" in str(blocked)
+            record("Automation gate (switch OFF)", "PASS" if gate_ok else "FAIL",
+                   {"status": blocked_status, "body": blocked})
+            config_status, patched = request("/api/v1/config", port=server.port, method="PATCH",
+                                             body={"automation": {"enabled": True, "scheduled_tasks": True}})
+            enabled = config_status == 200 and patched.get("state", {}).get("automation", {}).get("enabled") is True
+            record("Automation switch enabled", "PASS" if enabled else "FAIL",
+                   {"status": config_status, "revision": patched.get("revision") if isinstance(patched, dict) else None})
+            status, schedule = request("/api/v1/schedules", port=server.port, method="POST", body=schedule_body)
             pending = status == 201 and schedule.get("policy", {}).get("approval_required") and not schedule.get("enabled")
             if pending:
                 approved_status, approval = request(f"/api/v1/schedules/{schedule['id']}/approve",

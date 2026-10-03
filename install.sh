@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ============================================================================
-# SecureAgent 1.3.4 — Linux (Debian / Kali / Ubuntu) one-click setup
+# SecureAgent 2.0.0 — Linux (Debian / Kali / Ubuntu) one-click setup
 #
 # What it does:
 #   1. Installs system prerequisites (python3-venv, build tools, optionally Node.js)
@@ -171,7 +171,19 @@ mkdir -p "$ROOT/data" "$ROOT/logs" "$ROOT/workspace"
 
 # ---------------------------------------------------------------- 3. ui ------
 NEED_UI_BUILD=1
-if [ -f "$ROOT/backend/static/index.html" ] && [ "$REBUILD_UI" -eq 0 ]; then
+# A "prebuilt dashboard" only counts when it is COMPLETE: index.html must
+# exist AND every asset it references must be on disk. A half-synced bundle
+# (index.html without backend/static/assets) serves a blank page, so treat it
+# as missing and rebuild instead of silently shipping a broken UI.
+ui_bundle_complete() {
+  [ -f "$ROOT/backend/static/index.html" ] || return 1
+  local ref
+  for ref in $(grep -oE '(src|href)="\./[^"]+"' "$ROOT/backend/static/index.html" | sed -E 's/.*"\.\/([^"]+)"/\1/'); do
+    [ -f "$ROOT/backend/static/$ref" ] || return 1
+  done
+  return 0
+}
+if ui_bundle_complete && [ "$REBUILD_UI" -eq 0 ]; then
   NEED_UI_BUILD=0
   ok "Prebuilt dashboard found in backend/static (use --rebuild-ui to rebuild)."
 fi
@@ -250,7 +262,7 @@ else
 fi
 
 # ------------------------------------------------ 7b. linux sandbox detection --
-# SecureAgent 1.3.4+ runs the RESTRICTED_AGENT terminal inside a Linux
+# SecureAgent 2.0.0 runs the RESTRICTED_AGENT terminal inside a Linux
 # namespace sandbox. We need either bubblewrap (preferred) or unprivileged
 # user namespaces (fallback). If neither is available, autonomous terminal
 # execution stays disabled with LINUX_SANDBOX_UNAVAILABLE.

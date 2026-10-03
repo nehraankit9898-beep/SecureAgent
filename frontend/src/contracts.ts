@@ -89,3 +89,8 @@ export type DiagnosticsReport = {
 export type AgentMode = 'SAFE'|'ASSIST'|'CONTROL'|'CUSTOM'
 export type ModeResponse = {mode: AgentMode; source: string; emergency_stopped: boolean; note?: string}
 export type ModeSetResponse = {ok: boolean; mode: AgentMode; snapshot: Record<string, unknown>}
+
+export type NetworkCapability = {capability:string;allowed:boolean;reason:string|null;detail?:Record<string,unknown>}
+export type NetworkTelemetry = {request_count?:number;blocked_count?:number;last_request?:string|null;last_destination?:string|null;last_result?:string|null}
+export type NetworkEffectivePolicy = {mode:'disabled'|'localhost'|'private'|'external'|'full';rank:number;network_tools_enabled:boolean;allow_local_network:boolean;allow_private_network:boolean;allow_external_network:boolean;dns_enabled:boolean;web_search_operational:boolean;allowed_destinations:string[];blocked_destinations:string[];narrowed_by_control_center:boolean;narrowed_by_settings:boolean;settings_mode:string;control_center_mode:string|null}
+export type NetworkStatus = {effective:NetworkEffectivePolicy;settings:Record<string,unknown>;control_center:{available:boolean;mode:string|null;allowed_destinations:string[];blocked_destinations:string[];emergency_stopped?:boolean};capabilities:NetworkCapability[];protections:string[];telemetry:NetworkTelemetry;recent_network_audit?:unknown[]}

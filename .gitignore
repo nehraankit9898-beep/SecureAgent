@@ -4,3 +4,7 @@ __pycache__/
 
 # Test artifacts
 .pytest-data/
+# Local Python virtualenv / generated runtime state
+.venv/
+.live-verify/
+diagnostic-report.txt

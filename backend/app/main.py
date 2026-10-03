@@ -21,6 +21,15 @@ from app.execution_registry import ExecutionRegistry
 from app.knowledge import KnowledgeStore
 from app.llm import LLMError, close_llm, get_llm
 from app.network_security import NetworkPolicyError, SafeHttpClient
+from app.browser.api import build_browser_router
+from app.browser.policy import BrowserPolicyError
+from app.browser.runtime import BrowserRuntime, set_browser_runtime
+from app.model_api import build_model_router_api, provider_error_status
+from app.network_api import build_network_center_router
+from app.network_center import NetworkCenter, NetworkCenterError
+from app.providers import ProviderError, ProviderRuntime, RoutingProvider
+from app.voice.api import build_voice_router
+from app.voice.pipeline import VoiceError, VoicePipeline
 from app.memory import MemoryStore
 from app.memory_service import MemoryService
 from app.models import AgentRequest, AuditClearIn, AutomationActionIn, ChatRequest, DocumentIn, DocumentSearch, ExecutionResponse, FilesystemPathIn, GrantIn, MemoryIn, MemoryItem, MemoryPatch, PermissionActionIn, PresetIn, ResumeRequest, ScheduleCreate, SchedulePatch, StepStatus, Task, TaskStatus, TerminalExecuteIn, ToolDef, ToolPatchIn
@@ -37,6 +46,48 @@ memory_service = MemoryService(store)
 # The desktop UI is only a control panel; this object owns the real switches.
 control_center = ControlCenter(config.database_path.parent / "control_center.json", store)
 set_control_center(control_center)
+# --- Phase 09 browser runtime (engine starts lazily on first session) ------ #
+browser_runtime = BrowserRuntime(config, store=store, control_center=control_center)
+set_browser_runtime(browser_runtime)
+
+
+async def _emergency_close_browser_sessions():
+    """EMERGENCY STOP: close every browser context (cookies/storage dropped)."""
+    return {"closed_sessions": await browser_runtime.close_all()}
+
+
+# --- Network Center (effective policy = Settings ∩ Control Center) --------- #
+network_center = NetworkCenter(config, control_center=control_center, store=store)
+
+
+# --- Phase 13 model providers (registry + router; remote OFF by default) --- #
+provider_runtime = ProviderRuntime(config, store=store, control_center=control_center)
+routing_provider = RoutingProvider(config, runtime=provider_runtime)
+
+
+# --- Phase 11 voice pipeline (push-to-talk; OFF by default) ---------------- #
+async def _voice_agent_runner(request: AgentRequest):
+    """Execute a transcript through the SAME Orchestrator used for typed chat."""
+    gate = get_control_center()
+    if gate is not None and not gate.agent_active():
+        task = Task(goal=request.message)
+        task.status = TaskStatus.FAILED
+        task.errors.append("AGENT_DISABLED_BY_CONTROL_CENTER: the AI Agent master switch is OFF")
+        return execution_response(task, "LOCAL CORE", roles=["manager", "voice"], review_approved=False)
+    try:
+        return await asyncio.wait_for(Orchestrator(await agent()).run(request),
+                                      config.agent_timeout_seconds)
+    except asyncio.TimeoutError:
+        task = Task(goal=request.message)
+        task.status = TaskStatus.FAILED
+        task.errors.append("VOICE_TASK_TIMEOUT: the agent did not finish in time")
+        return execution_response(task, "LOCAL CORE", roles=["manager", "voice"], review_approved=False)
+
+
+voice_pipeline = VoicePipeline(config, runner=_voice_agent_runner, store=store,
+                              control_center=control_center)
+
+
 limiter = InMemoryRateLimiter({'default':config.rate_limit_default,'auth':config.rate_limit_auth,'chat':config.rate_limit_chat,'agent':config.rate_limit_agent,'tools':config.rate_limit_tools,'automation':config.rate_limit_automation},config.rate_limit_window_seconds,config.rate_limit_max_clients)
 automation: AutomationEngine | None = None
 session_approvals: dict[str, set] = {}
@@ -160,6 +211,7 @@ async def life(app):
     control_center.register_kill_switch("terminal", _emergency_kill_terminal)
     control_center.register_kill_switch("agent_tasks", _emergency_cancel_agent_tasks)
     control_center.register_kill_switch("automation", _emergency_cancel_automation)
+    control_center.register_kill_switch("browser", _emergency_close_browser_sessions)
     if control_center.recovery:
         await store.audit("control.recovered", control_center.recovery, actor="control-center")
     await store.audit("control.loaded", {
@@ -171,6 +223,8 @@ async def life(app):
     await control_center.on_backend_exit()
     if automation:
         await automation.close()
+    await browser_runtime.stop()
+    await voice_pipeline.stop()
     await close_llm()
 
 
@@ -188,6 +242,59 @@ async def llm_error_handler(request: Request, error: LLMError):
 @app.exception_handler(NetworkPolicyError)
 async def network_error_handler(request: Request, error: NetworkPolicyError):
     return JSONResponse({"success":False,"error":{"code":error.code,"message":str(error),"details":{"component":"network","recovery_action":"Review Network settings and trusted endpoint policy."}},"request_id":request_id_var.get()}, status_code=403)
+
+@app.exception_handler(BrowserPolicyError)
+async def browser_policy_handler(request: Request, error: BrowserPolicyError):
+    """Structured, secret-safe browser refusal (approval, policy, engine)."""
+    approval = "APPROVAL_REQUIRED" in error.code or "APPROVAL_REQUIRED" in str(error)
+    status = 403 if not approval else 409
+    return JSONResponse({"success": False, "error": {
+        "code": error.code,
+        "message": str(error)[:500],
+        "details": {"component": "browser",
+                    "recovery_action": ("Approve the action in the Control Center and resend with "
+                                        "approval='APPROVE'." if approval else
+                                        "Review browser/network policy settings.")}},
+        "request_id": request_id_var.get()}, status_code=status)
+
+
+@app.exception_handler(NetworkCenterError)
+async def network_center_error_handler(request: Request, error: NetworkCenterError):
+    """Structured network refusal (never invents connectivity)."""
+    from app.network_api import network_error_status
+    return JSONResponse({"success": False, "error": {
+        "code": error.code,
+        "message": (error.message or error.code)[:500],
+        "details": {"component": "network",
+                    "recovery_action": error.recovery or
+                    "Review the Network Center policy."}},
+        "request_id": request_id_var.get()}, status_code=network_error_status(error.code))
+
+
+@app.exception_handler(ProviderError)
+async def provider_error_handler(request: Request, error: ProviderError):
+    """Structured, secret-free provider failure (never echoes a key)."""
+    return JSONResponse({"success": False, "error": {
+        "code": error.code,
+        "message": (error.message or error.code)[:500],
+        "details": {"component": "providers",
+                    "recovery_action": error.recovery or
+                    "Review the provider configuration in the Control Center."}},
+        "request_id": request_id_var.get()},
+        status_code=provider_error_status(error.code))
+
+
+@app.exception_handler(VoiceError)
+async def voice_error_handler(request: Request, error: VoiceError):
+    approval = "APPROVAL" in error.code
+    return JSONResponse({"success": False, "error": {
+        "code": error.code,
+        "message": str(error)[:500],
+        "details": {"component": "voice",
+                    "recovery_action": ("Approve the pending task in the Control Center." if approval
+                                        else "Enable voice / configure a local STT/TTS provider.")}},
+        "request_id": request_id_var.get()}, status_code=409 if approval else 403)
+
 
 @app.exception_handler(RequestValidationError)
 async def validation_error_handler(request: Request, error: RequestValidationError):
@@ -239,6 +346,13 @@ async def security_middleware(request: Request, call_next):
             int((perf_counter() - started) * 1000),
         )
         request_id_var.reset(context)
+
+
+app.include_router(build_browser_router(config.api_prefix + "/browser"))
+app.include_router(build_voice_router(voice_pipeline, config.api_prefix + "/voice"))
+app.include_router(build_model_router_api(provider_runtime, routing_provider,
+                                          config.api_prefix + "/models"))
+app.include_router(build_network_center_router(network_center, config.api_prefix + "/network"))
 
 
 @app.get(config.api_prefix + "/auth/status")
@@ -576,25 +690,20 @@ async def test_ollama_embedding():
 @app.post(config.api_prefix + "/network/test")
 @app.get(config.api_prefix + "/network/test")
 async def test_network():
-    gate = get_control_center()
-    if gate is not None and not gate.workflows_active() and gate.state.network.mode == "disabled":
-        # The Control Center NETWORK master switch is the runtime authority.
-        raise HTTPException(409, "NETWORK_DISABLED: The Network master switch is OFF in the Control Center")
-    if not config.enable_network_tools or config.network_mode == "disabled":
-        raise HTTPException(409, "NETWORK_DISABLED: Network tools are disabled by policy")
-    if not config.searxng_base_url:
-        raise HTTPException(409, "NETWORK_NOT_CONFIGURED: SearXNG URL is required")
+    """Real connectivity test. Delegates to the Network Center so the effective
+    (Settings ∩ Control Center) policy and the structured refusal codes are the
+    single source of truth — nothing is faked when the provider is unreachable."""
     started = perf_counter()
     try:
-        body = await SafeHttpClient(config.network_timeout_seconds, config.network_max_response_bytes, config.allow_local_network, config.allow_private_network, config.allow_external_network, config.dns_enabled).get_json(str(config.searxng_base_url).rstrip('/') + '/search', params={'q':'SecureAgent connectivity test','format':'json'})
-        count = len(body.get('results', [])) if isinstance(body.get('results'), list) else 0
-        result = {"status":"CONNECTED","provider":"SearXNG","result_count":count,"duration_ms":int((perf_counter()-started)*1000)}
-        await store.audit("network.test", result)
-        return result
-    except Exception as error:
-        await store.audit("network.test", {"status":"FAILED","error":str(error)[:300]})
-        if isinstance(error, NetworkPolicyError): raise
-        raise HTTPException(503, "NETWORK_UNAVAILABLE: SearXNG did not respond") from error
+        probe = await network_center.test_search()
+    except NetworkCenterError as error:
+        await store.audit("network.test", {"status": "FAILED", "error": error.code})
+        raise
+    result = {"status": "CONNECTED", "provider": probe["provider"],
+              "result_count": probe["result_count"], "mode": probe["mode"],
+              "duration_ms": int((perf_counter() - started) * 1000)}
+    await store.audit("network.test", result)
+    return result
 
 
 def _agent_request(request: AgentRequest | ChatRequest) -> AgentRequest:
@@ -1623,8 +1732,17 @@ async def filesystem_overview():
         "workspace": str(config.workspace_root),
         "allowed_paths": [str(path) for path in roots],
         "control_center_paths": state.filesystem.allowed_paths,
-        "read_permissions": {"workspace": True, "approved_paths": True, "system_paths": False},
-        "write_permissions": {"workspace": True, "approved_paths": state.terminal.enabled, "system_paths": False},
+        "read_permissions": {"workspace": True, "approved_paths_via_terminal_jail": True,
+                             "system_paths": False},
+        "write_permissions": {"workspace": True,
+                              "approved_paths_via_terminal_jail": state.terminal.enabled,
+                              "system_paths": False},
+        # Honest scope: ordinary filesystem TOOLS stay confined to the
+        # workspace; Control Center approved paths extend the TERMINAL jail
+        # (LinuxTerminalExecutor.allowed_roots) at runtime.
+        "approved_paths_scope": {"filesystem_tools": "workspace only",
+                                 "terminal_jail": "workspace + Control Center approved paths",
+                                 "enforced_by": "LinuxTerminalExecutor.allowed_roots"},
         "protected_paths": state.filesystem.protected_paths,
         "terminal_tools_enabled": config.filesystem_tools_enabled,
     }

@@ -82,6 +82,10 @@ def _build_registry(config, root, store=None, executor=None):
         InspectProject(root, limit), SearchCode(root, limit), ReplaceInFile(root, limit),
         RunTests(root, test_sandbox, limit),
     ])
+    # Phase 09 — browser agent catalog. Registered even when disabled so the
+    # Control Center can show the reason; PermissionManager gates execution.
+    from app.browser.tools import build_browser_tools
+    tools.extend(build_browser_tools(config))
     policy = PermissionManager(config)
     for tool in tools:
         registry_instance.add(policy.apply(tool))

@@ -3,6 +3,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 import asyncio
 import json
+import logging
 import math
 import re
 import time
@@ -289,8 +290,23 @@ class FallbackProvider(LLMProvider):
 
 _provider=None
 def get_llm():
+    """The provider the agent core uses.
+
+    Multi-model routing (Phase 13) is composed in ``app.providers``: the router
+    tries the configured provider chain first and falls back to this module's
+    legacy chain (Ollama when enabled and reachable, otherwise the
+    deterministic ``LOCAL CORE``). With no provider configured the behaviour is
+    exactly the legacy behaviour.
+    """
     global _provider
-    if _provider is None: _provider=FallbackProvider()
+    if _provider is None:
+        try:
+            from app.providers import RoutingProvider
+            _provider = RoutingProvider(config=settings())
+        except Exception:
+            logging.getLogger("secureagent.llm").exception(
+                "multi-model router unavailable; using the legacy provider chain")
+            _provider = FallbackProvider()
     return _provider
 async def close_llm():
     global _provider

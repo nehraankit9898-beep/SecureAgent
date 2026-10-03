@@ -1,14 +1,14 @@
 import {FormEvent, ReactNode, useCallback, useEffect, useMemo, useState} from 'react'
 import {api, publicHealth, setToken} from './api'
-import type {Audit, AuthStatus, AgentMode, DiagnosticsReport, DocumentRecord, ExecutionResponse as Orchestration, Grant, Health, MemoryItem as Memory, ModeResponse, Notification, Permission, Schedule, ScheduleRun, SearchHit, SecurityReport, Settings, SystemHealth, SystemInfo, Task, TerminalStatus, ToolDef as Tool} from './contracts'
+import type {Audit, AuthStatus, AgentMode, DiagnosticsReport, DocumentRecord, ExecutionResponse as Orchestration, Grant, Health, MemoryItem as Memory, ModeResponse, NetworkStatus, Notification, Permission, Schedule, ScheduleRun, SearchHit, SecurityReport, Settings, SystemHealth, SystemInfo, Task, TerminalStatus, ToolDef as Tool} from './contracts'
 import SetupWizard from './SetupWizard'
 import {ReportsPanel, TerminalPanel, WorkflowsPanel} from './panels'
 
-type Tab = 'Dashboard' | 'Chat' | 'Tasks' | 'Agents' | 'Tools' | 'Memory' | 'Knowledge' | 'Automation' | 'Security' | 'Permissions' | 'Approvals' | 'Audit Logs' | 'Health' | 'Diagnostics' | 'Settings' | 'Terminal' | 'Workflows' | 'Reports'
+type Tab = 'Dashboard' | 'Chat' | 'Tasks' | 'Agents' | 'Tools' | 'Memory' | 'Knowledge' | 'Automation' | 'Network' | 'Security' | 'Permissions' | 'Approvals' | 'Audit Logs' | 'Health' | 'Diagnostics' | 'Settings' | 'Terminal' | 'Workflows' | 'Reports'
 
-const tabs: Tab[] = ['Dashboard', 'Chat', 'Workflows', 'Terminal', 'Tasks', 'Reports', 'Agents', 'Tools', 'Memory', 'Knowledge', 'Automation', 'Security', 'Permissions', 'Approvals', 'Audit Logs', 'Health', 'Diagnostics', 'Settings']
+const tabs: Tab[] = ['Dashboard', 'Chat', 'Workflows', 'Terminal', 'Tasks', 'Reports', 'Agents', 'Tools', 'Memory', 'Knowledge', 'Automation', 'Network', 'Security', 'Permissions', 'Approvals', 'Audit Logs', 'Health', 'Diagnostics', 'Settings']
 const simpleTabs: Tab[] = ['Dashboard', 'Chat', 'Workflows', 'Terminal', 'Tasks', 'Reports', 'Health', 'Diagnostics']
-const glyph: Record<Tab, string> = {Dashboard: 'D', Chat: 'C', Tasks: 'T', Agents: 'A', Tools: 'X', Memory: 'M', Knowledge: 'K', Automation: 'U', Security: 'S', Permissions: 'R', Approvals: 'P', 'Audit Logs': 'L', Health: 'H', Diagnostics: '⌕', Settings: 'G', Terminal: '›', Workflows: 'W', Reports: 'R'}
+const glyph: Record<Tab, string> = {Dashboard: 'D', Chat: 'C', Tasks: 'T', Agents: 'A', Tools: 'X', Memory: 'M', Knowledge: 'K', Automation: 'U', Network: 'N', Security: 'S', Permissions: 'R', Approvals: 'P', 'Audit Logs': 'L', Health: 'H', Diagnostics: '⌕', Settings: 'G', Terminal: '›', Workflows: 'W', Reports: 'R'}
 const roles = [
   ['Manager', 'Delegates once and owns completion'],
   ['Planner', 'Creates bounded low-risk plans'],
@@ -76,6 +76,11 @@ export default function App() {
   const [grants, setGrants] = useState<Grant[]>([])
   const [grantDraft, setGrantDraft] = useState<Permission>('read')
   // --- SecureAgent 2.0 additions ---
+  const [network, setNetwork] = useState<NetworkStatus | null>(null)
+  const [networkMode, setNetworkMode] = useState<'disabled' | 'localhost' | 'private' | 'external' | 'full'>('disabled')
+  const [networkAllowDraft, setNetworkAllowDraft] = useState('')
+  const [networkBlockDraft, setNetworkBlockDraft] = useState('')
+  const [networkNotice, setNetworkNotice] = useState('')
   const [agentMode, setAgentMode] = useState<AgentMode | null>(null)
   const [emergencyActive, setEmergencyActive] = useState(false)
   const [diagnosticsReport, setDiagnosticsReport] = useState<DiagnosticsReport | null>(null)
@@ -278,6 +283,37 @@ export default function App() {
     void run(async()=>{await api('/schedules',{method:'POST',body:JSON.stringify(payload)});setScheduleName('');setSchedulePrompt('');setScheduleRunAt('');setScheduleIntervalMinutes(60);await refresh()})
   }
   const changeDesktop = <K extends keyof DesktopSettings>(key: K, value: DesktopSettings[K]) => setDesktopConfig((current) => current ? {...current, [key]: value} : current)
+  // --- Network Center (backend-enforced; the UI only requests changes) ---
+  const loadNetwork = useCallback(async () => {
+    const status = await api<NetworkStatus>('/network')
+    setNetwork(status)
+    setNetworkMode(status.effective.mode)
+    setNetworkAllowDraft(status.effective.allowed_destinations.join(', '))
+    setNetworkBlockDraft(status.effective.blocked_destinations.join(', '))
+  }, [])
+  const parseDestinations = (value: string) => value.split(/[\s,]+/).map((item) => item.trim().toLowerCase()).filter(Boolean)
+  const saveNetworkPolicy = () => void run(async () => {
+    await api<{effective: NetworkStatus['effective']}>('/network/policy', {method: 'PATCH', body: JSON.stringify({
+      mode: networkMode,
+      allowed_destinations: parseDestinations(networkAllowDraft),
+      blocked_destinations: parseDestinations(networkBlockDraft),
+      confirm: true,
+    })})
+    await loadNetwork()
+    setNetworkNotice('Network policy applied by the backend. Effective mode follows the narrower of Settings and the Control Center.')
+  })
+  const testNetworkSearch = () => void run(async () => {
+    const result = await api<{status: string; provider: string; result_count: number}>('/network/test', {method: 'POST'})
+    setNetworkNotice(`${result.provider} reachable — ${result.result_count} results returned.`)
+  })
+
+  useEffect(() => {
+    if (tab !== 'Network') return
+    void run(async () => { await loadNetwork() })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tab, loadNetwork])
+
+
   const saveDesktop = () => void run(async () => {
     if (!window.secureAgent || !desktopConfig) return
     const result = await window.secureAgent.updateSettings(desktopConfig)
@@ -338,6 +374,38 @@ export default function App() {
       {tab === 'Security' && <section className="settings"><Panel title="RUNTIME POLICY"><h2>{settings?.environment || 'Unknown'}</h2><p>Authentication: {settings?.authentication ? 'required' : 'development bypass'}</p><p>Host Python: {settings?.python_execution || 'unknown'}</p></Panel><Panel title="TOOL POLICY"><h2>{tools.filter((tool) => tool.risk_level === 'high').length} high-risk tools</h2><p>{tools.filter((tool) => tool.sandbox_required).length} sandbox-required · {tools.filter((tool) => tool.network_required).length} network-required</p></Panel></section>}
       {tab === 'Permissions' && <section className="settings"><Panel title="EFFECTIVE POLICY"><h2>{settings?.approval_mode||'unknown'}</h2><p>High-risk approval is enforced by the backend. Permission grants are request-scoped; the frontend never bypasses tool authorization.</p>{(['read','write','execute','network','schedule','automation','admin'] as Permission[]).map(name=><div className="setting" key={name}><span>{name}</span><b>{tools.filter(t=>t.permissions.includes(name)).length} tools</b></div>)}</Panel><Panel title="PERSISTENT GRANTS (ALWAYS ALLOW)"><p>'Always allow' grants persist across conversations and are loaded by the agent on every task. High-risk tools still show the exact command for approval; BLOCKED commands can never be approved.</p>{grants.length ? grants.map((grant) => <div className="setting" key={grant.id}><span>{grant.permission}</span><div className="grant-row"><small>{grant.note || 'always allow'}</small><button className="quiet compact danger" onClick={() => removeGrant(grant.id)}>Revoke</button></div></div>) : <p className="history-empty">No persistent grants. Every permission grant expires with its session by default.</p>}<div className="inline-form compact-form"><select value={grantDraft} onChange={(event) => setGrantDraft(event.target.value as Permission)} aria-label="Grant permission">{(['read','write','execute','network','schedule','automation'] as Permission[]).map((name) => <option key={name} value={name}>{name}</option>)}</select><button className="send" onClick={addGrant}>Always allow</button></div></Panel><Panel title="BACKEND-CONFIRMED CONTROLS"><Toggle label="Filesystem tools" value={Boolean(desktopConfig?.filesystemToolsEnabled)} disabled={!desktopConfig} set={v=>desktopConfig&&changeDesktop('filesystemToolsEnabled',v)}/><Toggle label="Network tools" value={Boolean(desktopConfig?.networkEnabled)} disabled={!desktopConfig} set={v=>desktopConfig&&changeDesktop('networkEnabled',v)}/><Toggle label="Automation" value={Boolean(desktopConfig?.automationEnabled)} disabled={!desktopConfig} set={v=>desktopConfig&&changeDesktop('automationEnabled',v)}/><p>Changes are drafts until Save or Apply & Restart in Settings confirms persistence.</p><button onClick={()=>setTab('Settings')}>Open Settings</button></Panel></section>}
       {tab === 'Approvals' && <section className="grid-list">{waiting.length ? waiting.map((task) => {const step=task.steps.find((item)=>item.status==='waiting_confirmation');const tool=tools.find((item)=>item.name===step?.tool);return <article className="card approval-card" key={task.id}><p className="eyebrow">SECUREAGENT APPROVAL REQUIRED</p><Status value={task.status}/><h3>{step?.title || task.goal}</h3><p><b>Tool:</b> {step?.tool}<br/><b>Risk:</b> {tool?.risk_level || 'unknown'}<br/><b>Permissions:</b> {tool?.permissions.join(', ') || 'none'}<br/><b>Network:</b> {tool?.network_required ? 'required' : 'not required'}</p><pre>{JSON.stringify(step?.arguments || {},null,2)}</pre><p>Allow only if the target and expected effect match your intent.</p><div className="button-row"><button className="danger" disabled={busy} onClick={()=>reject(task.id)}>Deny</button><button disabled={busy} onClick={()=>approve(task,'once')}>Allow Once</button><button disabled={busy} onClick={()=>approve(task,'session')}>Allow for Session</button></div></article>}) : <Empty>No tasks require approval.</Empty>}</section>}
+      {tab === 'Network' && <section className="settings">
+        <Panel title="EFFECTIVE POLICY (SETTINGS ∩ CONTROL CENTER)">
+          <h2>{network?.effective.mode?.toUpperCase() || 'UNKNOWN'}</h2>
+          <p>Settings mode {network?.effective.settings_mode || 'unknown'} · Control Center mode {network?.effective.control_center_mode || 'unavailable'}{network?.effective.narrowed_by_control_center ? ' · narrowed by the Control Center' : ''}{network?.effective.narrowed_by_settings ? ' · narrowed by Settings' : ''}. The narrower policy always wins; the UI cannot widen it.</p>
+          <div className="setting"><span>localhost</span><b>{network?.effective.allow_local_network ? 'allowed' : 'blocked'}</b></div>
+          <div className="setting"><span>private LAN</span><b>{network?.effective.allow_private_network ? 'allowed' : 'blocked'}</b></div>
+          <div className="setting"><span>external</span><b>{network?.effective.allow_external_network ? 'allowed' : 'blocked'}</b></div>
+          <div className="setting"><span>DNS resolution</span><b>{network?.effective.dns_enabled ? 'enabled' : 'disabled'}</b></div>
+          <div className="setting"><span>network tools</span><b>{network?.effective.network_tools_enabled ? 'enabled' : 'disabled'}</b></div>
+          <div className="setting"><span>web search operational</span><b>{network?.effective.web_search_operational ? 'yes' : 'no'}</b></div>
+        </Panel>
+        <Panel title="POLICY CONTROLS (BACKEND-ENFORCED)">
+          <p>Changes are validated by the Control Center, audited, and applied at runtime. Turning the network OFF never needs confirmation; widening it does.</p>
+          <label>Mode<select aria-label="Network mode" value={networkMode} onChange={(event) => setNetworkMode(event.target.value as typeof networkMode)}><option value="disabled">OFF</option><option value="localhost">LOCALHOST</option><option value="private">PRIVATE LAN</option><option value="external">EXTERNAL</option><option value="full">FULL</option></select></label>
+          <label>Allowed destinations<input aria-label="Allowed destinations" value={networkAllowDraft} onChange={(event) => setNetworkAllowDraft(event.target.value)} placeholder="search.example.com, *.internal"/></label>
+          <label>Blocked destinations<input aria-label="Blocked destinations" value={networkBlockDraft} onChange={(event) => setNetworkBlockDraft(event.target.value)} placeholder="telemetry.example.com"/></label>
+          <div className="button-row"><button disabled={busy} onClick={saveNetworkPolicy}>Apply Network Policy</button><button disabled={busy} onClick={testNetworkSearch}>Test Search</button><button className="quiet" disabled={busy} onClick={() => void run(loadNetwork)}>Refresh</button></div>
+          {networkNotice && <p role="status">{networkNotice}</p>}
+        </Panel>
+        <Panel title="CAPABILITIES (REAL BACKEND STATE)">
+          {network?.capabilities.map((entry) => <div className="setting" key={entry.capability}><span>{entry.capability.replaceAll('_', ' ')}</span><b>{entry.allowed ? 'allowed' : entry.reason || 'blocked'}</b></div>)}
+        </Panel>
+        <Panel title="ALWAYS-ON PROTECTIONS">
+          <p>{network?.protections.join(' · ') || 'Loading…'}</p>
+        </Panel>
+        <Panel title="TELEMETRY (LIVE)">
+          <div className="setting"><span>requests</span><b>{network?.telemetry.request_count ?? 0}</b></div>
+          <div className="setting"><span>blocked</span><b>{network?.telemetry.blocked_count ?? 0}</b></div>
+          <div className="setting"><span>last result</span><b>{network?.telemetry.last_result || 'none'}</b></div>
+          <div className="setting"><span>last destination</span><b>{network?.telemetry.last_destination || 'none'}</b></div>
+        </Panel>
+      </section>}
       {tab === 'Terminal' && <TerminalPanel status={terminalStatus} onError={(message) => setError(message)}/>}
       {tab === 'Workflows' && <WorkflowsPanel onReport={openReport}/>}
       {tab === 'Reports' && <ReportsPanel/>}

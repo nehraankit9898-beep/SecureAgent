@@ -8,12 +8,60 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 ENV_FILE = PROJECT_ROOT / ".env"
+ENV_PREFIX = "SECURE_AGENT_"
+
+
+def _clamped_number(field: str, value, minimum: float, maximum: float,
+                    *, integer: bool = False):
+    """Clamp an over/under-limit budget-shaped setting instead of failing.
+
+    The multi-agent budgets (depth, runtime, tokens, tool calls, concurrency)
+    and the single-agent timeout are HARD platform ceilings that
+    ``app.multi_agent.MultiAgentBudgets`` re-enforces at every run. A
+    configuration value beyond the ceiling is therefore narrowed here (a
+    fail-safe clamp) rather than turned into a startup failure, so a stale or
+    over-eager ``.env`` can never widen the ceilings — and can never prevent
+    the backend from starting. Anything non-numeric is still rejected.
+    """
+    if isinstance(value, bool):
+        raise ValueError(f"{field} must be a number, not a boolean")
+    try:
+        number = int(value) if integer else float(value)
+    except (TypeError, ValueError) as error:
+        raise ValueError(f"{field} must be a number") from error
+    if integer:
+        return max(int(minimum), min(number, int(maximum)))
+    return max(float(minimum), min(number, float(maximum)))
 
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
-        env_file=ENV_FILE, env_prefix="SECURE_AGENT_", extra="ignore"
+        env_file=ENV_FILE, env_prefix=ENV_PREFIX, extra="ignore"
     )
+
+    @model_validator(mode="before")
+    @classmethod
+    def accept_env_style_keys(cls, data):
+        """Accept ``SECURE_AGENT_<FIELD>`` keyword arguments as field values.
+
+        Embedding applications, the desktop launcher and tests construct
+        ``Settings(SECURE_AGENT_MAX_AGENT_DEPTH=4, ...)``. Environment
+        variables and field-name keywords keep working unchanged; an
+        environment-style keyword is only a spelling of the field name and
+        never overrides an explicitly supplied field name.
+        """
+        if not isinstance(data, dict):
+            return data
+        fields = set(cls.model_fields)
+        normalized: dict = {}
+        for key, value in data.items():
+            if isinstance(key, str) and key.startswith(ENV_PREFIX):
+                name = key[len(ENV_PREFIX):].lower()
+                if name in fields:
+                    normalized.setdefault(name, value)
+                    continue
+            normalized[key] = value
+        return normalized
 
     app_name: str = "SecureAgent"
     api_prefix: str = "/api/v1"
@@ -38,6 +86,21 @@ class Settings(BaseSettings):
     max_embedding_dimension: int = Field(8_192, ge=1, le=65_536)
     max_embedding_values: int = Field(2_000_000, ge=1_000, le=20_000_000)
     max_embedding_input_chars: int = Field(100_000, ge=1_000, le=1_000_000)
+
+    # --- Phase 13: multi-model / API provider routing ------------------------ #
+    # Providers are DATA (a JSON registry), never code: the agent core talks to
+    # the router, and the router talks to whatever the user configured. Remote
+    # / cloud providers are OFF by default and require BOTH this switch and the
+    # Control Center ``ai.remote_providers_enabled`` switch before a request may
+    # leave the machine (local Ollama is unaffected). API keys are stored in
+    # the OS credential vault when available, otherwise in an encrypted 0600
+    # file next to the registry — never in logs, prompts, task history or API
+    # responses.
+    providers_config_path: Path = Path("data/providers.json")
+    remote_providers_enabled: bool = False
+    provider_secret_backend: Literal["auto", "keyring", "encrypted-file"] = "auto"
+    provider_request_timeout_seconds: float = Field(120, gt=0, le=600)
+    provider_max_response_bytes: int = Field(2_000_000, ge=10_000, le=20_000_000)
 
     database_path: Path = Path("data/secure_agent.db")
     workspace_root: Path = Path("workspace")
@@ -191,6 +254,60 @@ class Settings(BaseSettings):
     approval_mode: Literal["all", "high-risk"] = "high-risk"
     require_approval_for_high_risk: bool = True
 
+    # --- Phase 09: browser agent (Playwright) ------------------------------- #
+    # Master switch. OFF by default: no engine is started, no browser tool can
+    # run, and the catalog reports the tool as disabled with this reason.
+    browser_enabled: bool = False
+    browser_headless: bool = True
+    browser_max_sessions: int = Field(2, ge=1, le=8)
+    browser_max_pages_per_session: int = Field(4, ge=1, le=16)
+    browser_session_ttl_seconds: int = Field(600, ge=30, le=7_200)
+    browser_session_idle_seconds: int = Field(300, ge=30, le=3_600)
+    browser_navigation_timeout_seconds: float = Field(30, gt=0, le=180)
+    browser_action_timeout_seconds: float = Field(20, gt=0, le=120)
+    browser_max_snapshot_chars: int = Field(20_000, ge=1_000, le=200_000)
+    browser_max_links: int = Field(60, ge=1, le=500)
+    browser_screenshot_max_bytes: int = Field(8_000_000, ge=10_000, le=50_000_000)
+    # Screenshots are never persisted unless this is explicitly enabled, and
+    # sensitive regions (screen_sensitive_regions) are masked first.
+    browser_screenshot_persist: bool = False
+    browser_allow_downloads: bool = False
+    browser_max_download_bytes: int = Field(5_000_000, ge=10_000, le=100_000_000)
+    browser_allow_uploads: bool = False
+    browser_max_upload_bytes: int = Field(2_000_000, ge=1_024, le=50_000_000)
+    # Optional allow list. Empty means "no browser-level allow list" and the
+    # Control Center network policy remains the authority.
+    browser_allowed_domains: list[str] = Field(default_factory=list)
+    # Sensitive browser actions (purchase/send/submit/delete/account/security/
+    # credential) always require an explicit approval. Setting this False does
+    # NOT allow them: it blocks them outright (fail closed).
+    browser_sensitive_actions_require_approval: bool = True
+
+    # --- Phase 11: voice (STT/TTS) ------------------------------------------- #
+    # OFF by default; push-to-talk is the only capture mode implemented, so
+    # there is no always-listening path even when voice is enabled. Remote
+    # voice providers are refused unless explicitly allowed (data egress).
+    voice_enabled: bool = False
+    voice_push_to_talk: bool = True
+    voice_speak_replies: bool = False
+    voice_stt_provider: Literal["auto", "whisper", "whisper.cpp", "local",
+                                "openai", "remote", "openai-compatible"] = "auto"
+    voice_tts_provider: Literal["auto", "piper", "local",
+                                "openai", "remote", "openai-compatible"] = "auto"
+    voice_stt_binary: str | None = None
+    voice_stt_model_path: str | None = None
+    voice_tts_binary: str | None = None
+    voice_tts_model_path: str | None = None
+    voice_timeout_seconds: float = Field(60, gt=0, le=300)
+    voice_max_audio_bytes: int = Field(8_000_000, ge=1_024, le=50_000_000)
+    voice_max_text_chars: int = Field(4_000, ge=1, le=50_000)
+    voice_allow_remote_providers: bool = False
+    voice_remote_stt_endpoint: str | None = None
+    voice_remote_tts_endpoint: str | None = None
+    voice_remote_model: str = "whisper-1"
+    voice_remote_tts_model: str = "tts-1"
+    voice_remote_api_key: str | None = Field(default=None, repr=False)
+
     # --- Phase 14: MCP & external integrations ------------------------------ #
     # Master kill switch for ALL external integrations (MCP servers and
     # provider connectors). OFF by default: with no configuration nothing in
@@ -231,6 +348,45 @@ class Settings(BaseSettings):
     rate_limit_tools: int = Field(60, ge=1, le=5_000)
     rate_limit_automation: int = Field(20, ge=1, le=5_000)
     cors_origins: list[str] = ["http://localhost:5173", "http://127.0.0.1:5173"]
+
+    @field_validator("max_agent_depth", mode="before")
+    @classmethod
+    def clamp_agent_depth(cls, value):
+        return _clamped_number("max_agent_depth", value, 1, 4, integer=True)
+
+    @field_validator("multi_agent_max_concurrent_workers", mode="before")
+    @classmethod
+    def clamp_concurrent_workers(cls, value):
+        return _clamped_number("multi_agent_max_concurrent_workers", value, 1, 4, integer=True)
+
+    @field_validator("multi_agent_max_tool_calls", mode="before")
+    @classmethod
+    def clamp_tool_calls(cls, value):
+        return _clamped_number("multi_agent_max_tool_calls", value, 1, 50, integer=True)
+
+    @field_validator("multi_agent_max_tokens", mode="before")
+    @classmethod
+    def clamp_tokens(cls, value):
+        return _clamped_number("multi_agent_max_tokens", value, 10_000, 10_000_000, integer=True)
+
+    # NOTE: two separate validators (instead of one shared validator that
+    # reads ``info.field_name``) on purpose. ``pydantic-settings`` validates
+    # field *defaults* through ``ValidationInfo`` objects whose
+    # ``field_name`` is ``None`` (observed with the pinned
+    # pydantic 2.12.0 / pydantic-settings 2.10.0 pair), so a shared
+    # validator keyed on ``info.field_name`` raises ``KeyError: None``
+    # before the application can even start. Keeping the field name literal
+    # makes the clamp independent of that upstream detail.
+
+    @field_validator("agent_timeout_seconds", mode="before")
+    @classmethod
+    def clamp_agent_timeout(cls, value):
+        return _clamped_number("agent_timeout_seconds", value, 2.0, 900.0)
+
+    @field_validator("multi_agent_max_runtime_seconds", mode="before")
+    @classmethod
+    def clamp_multi_agent_runtime(cls, value):
+        return _clamped_number("multi_agent_max_runtime_seconds", value, 5.0, 900.0)
 
     @field_validator('ollama_model','embedding_model')
     @classmethod
@@ -324,6 +480,20 @@ class Settings(BaseSettings):
             self.block_cloud_metadata = False
         if self.require_approval_for_high_risk is False:
             raise ValueError("high-risk approval cannot be disabled")
+        # Voice: remote providers are opt-in and HTTPS-only; local providers
+        # never require network access.
+        if self.voice_allow_remote_providers:
+            for endpoint in (self.voice_remote_stt_endpoint, self.voice_remote_tts_endpoint):
+                if endpoint and not str(endpoint).startswith("https://"):
+                    raise ValueError("remote voice endpoints must use https")
+        # Browser downloads/uploads are opt-in and must stay inside the
+        # workspace jail; an enabled browser still cannot bypass the network
+        # policy because every navigation re-validates the destination.
+        for raw in self.browser_allowed_domains:
+            if not isinstance(raw, str) or not raw.strip() or len(raw) > 253:
+                raise ValueError("browser_allowed_domains entries must be 1-253 character hostnames")
+        self.browser_allowed_domains = [item.strip().lower()
+                                        for item in self.browser_allowed_domains if item.strip()]
         # terminal allowed paths must be absolute, existing, non-root directories
         normalized_paths: list[str] = []
         for raw in self.terminal_allowed_paths:
@@ -341,6 +511,8 @@ class Settings(BaseSettings):
             self.database_path = (PROJECT_ROOT / self.database_path).resolve()
         if not self.workspace_root.is_absolute():
             self.workspace_root = (PROJECT_ROOT / self.workspace_root).resolve()
+        if not self.providers_config_path.is_absolute():
+            self.providers_config_path = (PROJECT_ROOT / self.providers_config_path).resolve()
         return self
 
 
