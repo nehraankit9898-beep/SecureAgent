@@ -136,6 +136,25 @@ class Settings(BaseSettings):
     # mouse/keyboard synthesis and stays fail-closed in this release.
     computer_agent_enabled: bool = False
     computer_agent_physical_input: bool = False
+    # --- Phase 4: screen perception (capture / OCR / vision) --------------- #
+    # Screenshots are NEVER persisted by default; enabling persistence applies
+    # the retention window below and mandatory sensitive-region redaction.
+    screen_capture_persist: bool = False
+    screen_capture_retention_seconds: int = Field(300, ge=30, le=86_400)
+    screen_capture_max_bytes: int = Field(12_000_000, ge=10_000, le=50_000_000)
+    # Rectangles in monitor-relative pixels that are masked out BEFORE any
+    # storage or logging: {"name": "label", "x": .., "y": .., "width": .., "height": ..}
+    screen_sensitive_regions: list[dict[str, int | str]] = Field(default_factory=list)
+    # Cloud vision stays off unless explicitly configured AND enabled. Local
+    # OCR (tesseract binary) is the local-first default when present.
+    vision_cloud_enabled: bool = False
+    vision_cloud_endpoint: AnyHttpUrl | None = None
+    vision_cloud_api_key: str | None = Field(default=None, repr=False)
+    ocr_timeout_seconds: float = Field(20, gt=0, le=120)
+    # --- Phase 5: physical input synthesis budgets -------------------------- #
+    input_action_rate_per_minute: int = Field(60, ge=1, le=600)
+    input_drag_max_distance_px: int = Field(4000, ge=1, le=20_000)
+    input_max_text_chars: int = Field(2000, ge=1, le=10_000)
     enable_automation: bool = False
     automation_require_approval: bool = True
     automation_max_concurrent_jobs: int = Field(2, ge=1, le=16)

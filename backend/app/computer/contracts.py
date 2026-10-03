@@ -35,7 +35,7 @@ from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from app.models import Permission, RiskLevel, ToolDef
+from app.models import Permission, Reversibility, RiskLevel, ToolDef
 from app.security import redact
 
 # --------------------------------------------------------------------------- #
@@ -434,7 +434,9 @@ class ComputerTool(ABC):
     name: str
     description: str
     category: ActionCategory = ActionCategory.SCREEN
+    version: str = "1.0.0"  # Phase 3 metadata (mirrors app.tools.base.Tool)
     risk_level: RiskLevel = RiskLevel.LOW
+    reversibility: Reversibility = Reversibility.PARTIAL
     input_model: type[BaseModel]
     output_model: type[BaseModel]
     permissions: frozenset[Permission] = frozenset({Permission.SAFE})
@@ -460,6 +462,8 @@ class ComputerTool(ABC):
             name=self.name,
             description=self.description,
             category=self.category.value,
+            version=self.version,
+            reversibility=self.reversibility,
             risk_level=self.risk_level,
             required_permissions=required,
             permissions=required,
@@ -474,6 +478,7 @@ class ComputerTool(ABC):
             requires_approval=self.requires_approval,
             disabled_reason=self.disabled_reason,
             platforms=self.platforms or ["linux", "windows", "macos"],
+            platform=self.platforms or ["linux", "windows", "macos"],
         )
 
     @abstractmethod
