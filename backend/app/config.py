@@ -175,6 +175,36 @@ class Settings(BaseSettings):
     approval_mode: Literal["all", "high-risk"] = "high-risk"
     require_approval_for_high_risk: bool = True
 
+    # --- Phase 14: MCP & external integrations ------------------------------ #
+    # Master kill switch for ALL external integrations (MCP servers and
+    # provider connectors). OFF by default: with no configuration nothing in
+    # this subsystem loads, registers tools, or touches credentials.
+    integrations_enabled: bool = False
+    # Optional JSON file describing configured providers/MCP servers. Relative
+    # paths resolve against the project root at use time. The file may carry
+    # environment-variable NAMES for secrets — never secret values.
+    integrations_config_path: Path = Path("data/integrations.json")
+    mcp_enabled: bool = False
+    # Explicit server allowlist. A server not listed here can never connect,
+    # regardless of what the integration config file says. Empty = no server.
+    mcp_allowed_servers: list[str] = Field(default_factory=list)
+    mcp_connect_timeout_seconds: float = Field(10, gt=0, le=120)
+    mcp_call_timeout_seconds: float = Field(30, gt=0, le=300)
+    mcp_max_request_bytes: int = Field(65_536, ge=1_024, le=1_000_000)
+    mcp_max_response_bytes: int = Field(200_000, ge=1_000, le=2_000_000)
+    # Per-server tool-name allowlists; a server without an entry exposes zero
+    # tools (fail closed). Applies to stdio and HTTP transports alike.
+    mcp_server_tool_allowlists: dict[str, list[str]] = Field(default_factory=dict)
+    # Stdio command allowlist: resolved executable path -> allowed arguments
+    # (exact match). An empty mapping disables the stdio transport entirely.
+    mcp_stdio_allowed_commands: dict[str, list[str]] = Field(default_factory=dict)
+    # Remote MCP endpoints must be HTTPS unless allow_local_mcp opens
+    # loopback http:// URLs for local development only.
+    allow_local_mcp: bool = False
+    # When true (default) every connector starts in read-only mode and any
+    # mutating call is refused until the operator flips it per provider.
+    integrations_default_read_only: bool = True
+
     max_request_bytes: int = Field(1_000_000, ge=1_024, le=20_000_000)
     rate_limit_window_seconds: int = Field(60, ge=1, le=3_600)
     rate_limit_max_clients: int = Field(10_000, ge=10, le=100_000)
