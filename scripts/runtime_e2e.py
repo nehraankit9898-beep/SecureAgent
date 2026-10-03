@@ -46,6 +46,11 @@ class Server:
             "SECURE_AGENT_DATABASE_PATH": str(state / "state.db"),
             "SECURE_AGENT_WORKSPACE_ROOT": str(state / "workspace"),
             "SECURE_AGENT_ENABLE_AUTOMATION": "true",
+            # Keep the repeatable integration run offline; network behavior is
+            # tested in dedicated policy suites rather than using live egress.
+            "SECURE_AGENT_ENABLE_NETWORK_TOOLS": "false",
+            "SECURE_AGENT_NETWORK_MODE": "disabled",
+            "SECURE_AGENT_ALLOW_EXTERNAL_NETWORK": "false",
             "SECURE_AGENT_SCHEDULER_POLL_SECONDS": "1",
         }
         (state / "workspace").mkdir(exist_ok=True)

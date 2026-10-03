@@ -10,16 +10,16 @@ const DEFAULTS = Object.freeze({
   chatModel: 'llama3.2',
   embeddingModel: 'nomic-embed-text',
   maxCompletionTokens: 16384,
-  networkEnabled: false,
-  networkMode: 'disabled',
+  networkEnabled: true,
+  networkMode: 'full',
   searxngBaseUrl: '',
   networkTrustedPrivateEndpoint: false,
   webSearchEnabled: false,
-  httpRequestsEnabled: false,
+  httpRequestsEnabled: true,
   dnsEnabled: true,
   allowLocalNetwork: false,
   allowPrivateNetwork: false,
-  allowExternalNetwork: false,
+  allowExternalNetwork: true,
   requireApprovalForExternalNetwork: true,
   agentEnabled: true,
   autonomousMode: false,
@@ -27,9 +27,9 @@ const DEFAULTS = Object.freeze({
   toolsEnabled: true,
   filesystemToolsEnabled: true,
   codingToolsEnabled: true,
-  terminalToolsEnabled: false,
+  terminalToolsEnabled: true,
   terminalBackend: 'linux',
-  terminalSudoEnabled: true,
+  terminalSudoEnabled: false,
   securityWorkflowsEnabled: true,
   pluginsEnabled: false,
   terminalSandboxImage: '',
@@ -55,6 +55,7 @@ function validateHttpUrl(value, {allowEmpty = false, loopbackOnly = false} = {})
 }
 
 function normalizeConfig(value = {}) {
+  value = {...DEFAULTS, ...value}
   const image = (name) => { const text=String(value[name] || ''); if(text && !/^[^\s]+@sha256:[0-9a-f]{64}$/.test(text)) throw new Error(`${name} must use an immutable @sha256 digest`); return text }
   const terminalSandboxImage = image('terminalSandboxImage')
   const pythonSandboxImage = image('pythonSandboxImage')
@@ -73,8 +74,8 @@ function normalizeConfig(value = {}) {
   const allowLocalNetwork = networkEnabled && value.allowLocalNetwork === true
   const allowPrivateNetwork = networkEnabled && value.allowPrivateNetwork === true
   const allowExternalNetwork = networkEnabled && networkMode === 'full' && value.allowExternalNetwork === true
-  if (networkMode === 'local' && !(allowLocalNetwork || allowPrivateNetwork)) throw new Error('Local mode requires localhost or private LAN access')
-  if (networkMode === 'full' && !allowExternalNetwork) throw new Error('Full mode requires external network access')
+  if (networkEnabled && networkMode === 'local' && !(allowLocalNetwork || allowPrivateNetwork)) throw new Error('Local mode requires localhost or private LAN access')
+  if (networkEnabled && networkMode === 'full' && !allowExternalNetwork) throw new Error('Full mode requires external network access')
   return {
     setupComplete: value.setupComplete === true,
     preferredPort: Number.isInteger(Number(value.preferredPort)) && Number(value.preferredPort) >= 0 && Number(value.preferredPort) <= 65535 ? Number(value.preferredPort) : DEFAULTS.preferredPort,

@@ -40,11 +40,29 @@ test('dynamic port selection returns a bindable loopback port', async () => {
   assert.ok(port >= 1024 && port <= 65535)
 })
 
-test('network settings are fail-closed and validated', () => {
-  const defaults = normalizeConfig({})
-  assert.equal(defaults.networkEnabled, false)
-  assert.equal(defaults.networkMode, 'disabled')
-  assert.throws(() => normalizeConfig({networkEnabled: true, networkMode: 'full'}), /external network/)
+test('network defaults permit approved public egress only and remain validated', () => {
+  const direct = normalizeConfig()
+  assert.equal(direct.networkEnabled, true)
+  assert.equal(direct.networkMode, 'full')
+  assert.equal(direct.allowExternalNetwork, true)
+  assert.equal(direct.terminalToolsEnabled, true)
+  assert.equal(direct.terminalSudoEnabled, false)
+  const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'secureagent-defaults-'))
+  const defaults = loadConfig(path.join(temp, 'not-created.json'))
+  assert.equal(defaults.networkEnabled, true)
+  assert.equal(defaults.networkMode, 'full')
+  assert.equal(defaults.httpRequestsEnabled, true)
+  assert.equal(defaults.webSearchEnabled, false) // Requires explicit enablement and SearXNG.
+  assert.equal(defaults.allowExternalNetwork, true)
+  assert.equal(defaults.allowLocalNetwork, false)
+  assert.equal(defaults.allowPrivateNetwork, false)
+  assert.equal(defaults.requireApprovalForExternalNetwork, true)
+  assert.equal(defaults.terminalToolsEnabled, true)
+  assert.equal(defaults.terminalSudoEnabled, false)
+  const disabled = normalizeConfig({...defaults, networkEnabled:false})
+  assert.equal(disabled.networkEnabled, false)
+  assert.equal(disabled.networkMode, 'disabled')
+  assert.throws(() => normalizeConfig({networkEnabled: true, networkMode: 'full', allowExternalNetwork:false}), /external network/)
   assert.throws(() => normalizeConfig({networkEnabled: true, networkMode: 'local'}), /localhost or private LAN/)
   const configured = normalizeConfig({networkEnabled: true, networkMode: 'full', allowExternalNetwork:true, webSearchEnabled:true, searxngBaseUrl: 'https://search.example.com'})
   assert.equal(configured.networkEnabled, true)
@@ -97,22 +115,22 @@ test('central settings persist and propagate feature policy', () => {
 })
 
 test('completion token setting is bounded and persists', () => {
-  assert.equal(normalizeConfig({maxCompletionTokens: 4096}).maxCompletionTokens, 4096)
-  assert.equal(normalizeConfig({maxCompletionTokens: 1}).maxCompletionTokens, 128)
-  assert.equal(normalizeConfig({maxCompletionTokens: 999999}).maxCompletionTokens, 131072)
+  assert.equal(normalizeConfig({networkEnabled:false, maxCompletionTokens: 4096}).maxCompletionTokens, 4096)
+  assert.equal(normalizeConfig({networkEnabled:false, maxCompletionTokens: 1}).maxCompletionTokens, 128)
+  assert.equal(normalizeConfig({networkEnabled:false, maxCompletionTokens: 999999}).maxCompletionTokens, 131072)
 })
 
 test('sandboxed execution settings reject mutable or missing images', () => {
   // The Docker terminal backend requires a pinned image; the Linux-native
   // terminal backend does not need Docker at all.
   assert.throws(() => normalizeConfig({terminalToolsEnabled:true, terminalBackend:'docker'}), /pinned Docker image/)
-  assert.equal(normalizeConfig({terminalToolsEnabled:true}).terminalBackend, 'linux')
+  assert.equal(normalizeConfig({networkEnabled:false, terminalToolsEnabled:true}).terminalBackend, 'linux')
   assert.throws(() => normalizeConfig({pythonExecutionBackend:'docker',pythonSandboxImage:'python:latest'}), /immutable/)
 })
 
 test('terminal backend selection maps to backend environment policy', () => {
   const digest = 'a'.repeat(64)
-  const configured = normalizeConfig({terminalToolsEnabled:true, terminalBackend:'linux', terminalSudoEnabled:false, securityWorkflowsEnabled:false, pluginsEnabled:true})
+  const configured = normalizeConfig({networkEnabled:false, terminalToolsEnabled:true, terminalBackend:'linux', terminalSudoEnabled:false, securityWorkflowsEnabled:false, pluginsEnabled:true})
   const manager = new BackendManager({app:{isPackaged:false},paths:{database:'d',workspace:'w'},config:configured,token:'x'.repeat(43),logger:{info(){},error(){}}})
   manager.port=9001
   const env=manager.environment()
@@ -123,7 +141,7 @@ test('terminal backend selection maps to backend environment policy', () => {
   assert.equal(env.SECURE_AGENT_PLUGINS_ENABLED,'true')
   // the docker test sandbox is not enabled for the linux terminal backend
   assert.equal(env.SECURE_AGENT_TEST_SANDBOX_ENABLED,'false')
-  const dockerConfig = normalizeConfig({terminalToolsEnabled:true, terminalBackend:'docker', terminalSandboxImage:`sandbox@sha256:${digest}`})
+  const dockerConfig = normalizeConfig({networkEnabled:false, terminalToolsEnabled:true, terminalBackend:'docker', terminalSandboxImage:`sandbox@sha256:${digest}`})
   const dockerManager = new BackendManager({app:{isPackaged:false},paths:{database:'d',workspace:'w'},config:dockerConfig,token:'x'.repeat(43),logger:{info(){},error(){}}})
   dockerManager.port=9002
   assert.equal(dockerManager.environment().SECURE_AGENT_TEST_SANDBOX_ENABLED,'true')
@@ -183,7 +201,7 @@ test('readiness validates version, health schema, and token', async()=>{
 test('logger rotates oversized desktop logs',()=>{const {FileLogger}=require('../services/logger');const temp=fs.mkdtempSync(path.join(os.tmpdir(),'secureagent-log-'));const logger=new FileLogger(temp);fs.writeFileSync(logger.file,'x'.repeat(5*1024*1024+1));logger.info('rotation.test','safe');assert.ok(fs.existsSync(logger.file+'.1'));assert.doesNotMatch(fs.readFileSync(logger.file,'utf8'),/secret-value/)})
 
 test('renderer never receives backend bearer token and child env is allowlisted',()=>{const ipc=fs.readFileSync(path.join(__dirname,'..','ipc','register.js'),'utf8');assert.doesNotMatch(ipc,/bootstrap = .*token:/);const preload=fs.readFileSync(path.join(__dirname,'..','preload.js'),'utf8');assert.match(preload,/backendRequest/);process.env.SENTINEL_PARENT_SECRET='do-not-inherit';const m=new BackendManager({app:{isPackaged:false},paths:{database:'d',workspace:'w'},config:{},token:'x'.repeat(43),logger:{info(){},error(){}}});m.port=1;assert.equal(m.environment().SENTINEL_PARENT_SECRET,undefined)})
-test('remote Ollama requires explicit HTTPS egress approval',()=>{assert.throws(()=>normalizeConfig({ollamaBaseUrl:'http://example.com:11434'}),/explicit data-egress/);assert.throws(()=>normalizeConfig({ollamaBaseUrl:'http://example.com:11434',allowRemoteOllama:true}),/HTTPS/);assert.equal(normalizeConfig({ollamaBaseUrl:'https://example.com',allowRemoteOllama:true}).allowRemoteOllama,true)})
+test('remote Ollama requires explicit HTTPS egress approval',()=>{assert.throws(()=>normalizeConfig({networkEnabled:false,ollamaBaseUrl:'http://example.com:11434'}),/explicit data-egress/);assert.throws(()=>normalizeConfig({networkEnabled:false,ollamaBaseUrl:'http://example.com:11434',allowRemoteOllama:true}),/HTTPS/);assert.equal(normalizeConfig({networkEnabled:false,ollamaBaseUrl:'https://example.com',allowRemoteOllama:true}).allowRemoteOllama,true)})
 
 test('IPC allowlist includes the new terminal mode and SSE stream routes', () => {
   const ipc = fs.readFileSync(path.join(__dirname, '..', 'ipc', 'register.js'), 'utf8')

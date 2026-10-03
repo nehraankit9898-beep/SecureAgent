@@ -60,6 +60,8 @@ BACKEND_ENV = {
     "SECURE_AGENT_SECURITY_WORKFLOWS_ENABLED": "true",
     "SECURE_AGENT_ENABLE_AUTOMATION": "false",
     "SECURE_AGENT_ENABLE_NETWORK_TOOLS": "false",
+    "SECURE_AGENT_NETWORK_MODE": "disabled",
+    "SECURE_AGENT_ALLOW_EXTERNAL_NETWORK": "false",
 }
 
 
@@ -142,8 +144,13 @@ def main() -> int:
                   str(LIVE_DIR / "control_center.json"))
             check("secure mode defaults ON", config["state"]["secure_mode"] is True,
                   f"secure_mode={config['state']['secure_mode']}")
-            check("network defaults DISABLED", config["state"]["network"]["mode"] == "disabled",
+            check("Control Center network master defaults FULL", config["state"]["network"]["mode"] == "full",
                   f"mode={config['state']['network']['mode']}")
+            network_status = get(client, "/api/v1/network").json()
+            check("offline verification profile keeps effective network DISABLED",
+                  network_status["effective"]["mode"] == "disabled"
+                  and network_status["effective"]["network_tools_enabled"] is False,
+                  f"effective={network_status['effective']['mode']} tools={network_status['effective']['network_tools_enabled']}")
             check("sudo defaults OFF", config["state"]["sudo"]["mode"] == "disabled",
                   f"sudo={config['state']['sudo']['mode']}")
 

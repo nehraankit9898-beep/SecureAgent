@@ -83,10 +83,29 @@ def test_1_terminal_off_rejects_execution_then_on_allows():
 # 2. Network OFF -> network tool rejected
 # --------------------------------------------------------------------------- #
 
+def test_default_policy_keeps_privileged_controls_off():
+    from app.control_center import ControlState
+    state = ControlState()
+    assert state.network.mode == "full"
+    assert state.terminal.enabled is True
+    assert state.terminal.restricted_mode is True
+    assert state.terminal.allow_sudo is False
+    assert state.terminal.allow_network is False
+    assert state.sudo.mode == "disabled"
+    assert state.host_control.enabled is False
+    assert state.automation.enabled is False
+    assert state.browser.enabled is False
+    assert state.voice.microphone_permission is False
+    assert all(getattr(state.security, name) for name in (
+        "command_policy", "filesystem_protection", "network_policy",
+        "approval_system", "audit_logging", "secret_redaction"))
+
+
 def test_2_network_disabled_blocks_http_client_and_records_telemetry():
     from app.network_security import SafeHttpClient
     cc = _cc()
-    assert cc.state.network.mode == "disabled"
+    assert cc.state.network.mode == "full"  # fresh runtime default; this test disables it explicitly
+    cc.state.network.mode = "disabled"
     with pytest.raises(PermissionError, match="NETWORK_BLOCKED_BY_CONTROL_CENTER"):
         _run(SafeHttpClient(1, 1000).request("GET", "https://example.com/"))
     assert cc.telemetry.blocked_count >= 1

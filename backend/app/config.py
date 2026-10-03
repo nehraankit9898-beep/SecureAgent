@@ -140,12 +140,13 @@ class Settings(BaseSettings):
     tools_enabled: bool = True
     filesystem_tools_enabled: bool = True
     coding_tools_enabled: bool = True
-    terminal_tools_enabled: bool = False
-    # terminal backend selects the terminal subsystem: 'docker' keeps the
-    # original locked-down Docker sandbox terminal; 'linux' enables the
-    # Linux-native terminal agent (command policy engine + /bin/bash jail);
-    # the master switch terminal_tools_enabled gates both.
-    terminal_backend: Literal["docker", "linux"] = "docker"
+    terminal_tools_enabled: bool = True
+    # Restricted Linux terminal tools are available by default. The executor
+    # still fails closed unless the complete bubblewrap sandbox is usable;
+    # HOST_CONTROL and sudo remain separately disabled and user-confirmed.
+    # 'docker' selects the original container sandbox; 'linux' selects the
+    # Linux-native policy engine + mandatory /bin/bash jail.
+    terminal_backend: Literal["docker", "linux"] = "linux"
     terminal_shell: str = "/bin/bash"
     terminal_allowed_paths: list[str] = Field(default_factory=list)
     terminal_command_timeout_seconds: float = Field(30, gt=0, le=600)
@@ -197,17 +198,24 @@ class Settings(BaseSettings):
     test_max_copy_bytes: int = Field(100_000_000, ge=1_000_000, le=1_000_000_000)
     test_max_copy_files: int = Field(20_000, ge=100, le=200_000)
 
-    enable_network_tools: bool = False
+    # Default egress profile: bounded HTTP tools may reach public internet
+    # destinations. The address-class ceilings below deliberately keep
+    # localhost/private LAN disabled; cloud metadata and special-use IPs are
+    # blocked separately. Network tools still pass the Control Center gate and
+    # external requests require approval.
+    enable_network_tools: bool = True
     # Five-tier network model (spec section 9). ``local`` is kept as a
-    # backward-compatible alias for ``localhost``.
-    network_mode: Literal["disabled", "localhost", "local", "private", "external", "full"] = "disabled"
+    # backward-compatible alias for ``localhost``. 'full' is narrowed by the
+    # explicit address-class flags below: public external only by default.
+    network_mode: Literal["disabled", "localhost", "local", "private", "external", "full"] = "full"
     searxng_base_url: AnyHttpUrl | None = None
+    # Web search remains opt-in and requires a configured SearXNG endpoint.
     web_search_enabled: bool = False
-    http_requests_enabled: bool = False
+    http_requests_enabled: bool = True
     dns_enabled: bool = True
     allow_local_network: bool = False
     allow_private_network: bool = False
-    allow_external_network: bool = False
+    allow_external_network: bool = True
     require_approval_for_external_network: bool = True
     # SSRF defence: block cloud metadata endpoints and link-local addresses
     # even when local/private network is allowed. These are always blocked

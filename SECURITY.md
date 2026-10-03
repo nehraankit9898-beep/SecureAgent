@@ -15,7 +15,10 @@ Authorized systems, defensive research, lab/CTF environments, and explicitly sco
 - Host Python execution disabled. Container policies require immutable image digests, non-root UID, no network, read-only input, dropped capabilities, PID/CPU/memory/output/time bounds.
 - Secret-pattern rejection for memory and recursive audit redaction.
 - Prompt-injection framing for memories, history, repositories, documents, web results, and tool results.
-- Automation and network tools disabled by default.
+- Automation stays disabled by default. Bounded HTTP tools are enabled for public
+  external destinations with explicit approval; localhost/private-LAN access
+  and cloud metadata remain blocked by the layered network policy. Web search
+  remains opt-in and requires a configured SearXNG endpoint.
 
 ## Deployment requirements
 
