@@ -4,7 +4,7 @@ import re
 from typing import Any, Literal
 from uuid import uuid4
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_serializer, field_validator, model_validator
 
 class Message(BaseModel):
     role:Literal['system','user','assistant'];content:str=Field(min_length=1,max_length=100000)
@@ -45,9 +45,36 @@ class ToolDef(BaseModel):
 
 class ToolResult(BaseModel):name:str;success:bool;output:dict[str,Any]|None=None;error:str|None=None;code:str|None=None;retryable:bool=False;duration_ms:int=0
 class StepStatus(StrEnum):PENDING='pending';RUNNING='running';WAITING='waiting_confirmation';DONE='completed';FAILED='failed';CANCELLED='cancelled'
-class TaskStatus(StrEnum):PLANNING='planning';RUNNING='running';WAITING='waiting_confirmation';DONE='completed';FAILED='failed';CANCELLED='cancelled'
+class TaskStatus(StrEnum):
+    """Phase 2 task lifecycle states.
+
+    The six legacy wire values (planning/running/waiting_confirmation/
+    completed/failed/cancelled) keep their exact spelling so persisted tasks,
+    the frontend/desktop contracts and automation history remain compatible.
+    The added internal states (PENDING, OBSERVING, VERIFYING, RECOVERING,
+    WAITING_APPROVAL) are serialized through ``legacy_wire`` aliases defined
+    in app.agent_core before they ever reach an API response.
+    """
+    PENDING='pending';PLANNING='planning';OBSERVING='observing';RUNNING='running';ACTING='acting';VERIFYING='verifying';RECOVERING='recovering';WAITING_APPROVAL='waiting_approval';WAITING='waiting_confirmation';COMPLETED='completed';DONE='completed';FAILED='failed';CANCELLED='cancelled'
+    @property
+    def legacy_wire(self)->str:
+        from app.agent_core import LEGACY_STATUS_ALIASES, TaskState
+        return LEGACY_STATUS_ALIASES[TaskState(self.value)]
 class Step(BaseModel):id:str=Field(default_factory=lambda:str(uuid4()));title:str;tool:str;arguments:dict[str,Any]=Field(default_factory=dict);status:StepStatus=StepStatus.PENDING;result:ToolResult|None=None
-class Task(BaseModel):id:str=Field(default_factory=lambda:str(uuid4()));conversation_id:str=Field(default_factory=lambda:str(uuid4()));goal:str;intent:str='general';status:TaskStatus=TaskStatus.PLANNING;steps:list[Step]=Field(default_factory=list);current_step:int=0;errors:list[str]=Field(default_factory=list);answer:str|None=None;created_at:datetime=Field(default_factory=lambda:datetime.now(UTC));updated_at:datetime=Field(default_factory=lambda:datetime.now(UTC))
+class Task(BaseModel):
+    id:str=Field(default_factory=lambda:str(uuid4()));conversation_id:str=Field(default_factory=lambda:str(uuid4()));goal:str;intent:str='general';status:TaskStatus=TaskStatus.PLANNING;steps:list[Step]=Field(default_factory=list);current_step:int=0;errors:list[str]=Field(default_factory=list);answer:str|None=None;created_at:datetime=Field(default_factory=lambda:datetime.now(UTC));updated_at:datetime=Field(default_factory=lambda:datetime.now(UTC))
+
+    def wire_status(self)->str:
+        """Legacy API wire value for the current state (Phase 2 compatibility)."""
+        return self.status.legacy_wire
+
+    @field_serializer('status',when_used='always')
+    def _serialize_status(self,value:TaskStatus,_info)->str:
+        # Internal Phase 2 states (pending, observing, verifying, recovering,
+        # waiting_approval) always serialize to their legacy alias so the
+        # public API contract keeps its original six status values. This
+        # applies to model_dump, model_dump_json and FastAPI responses.
+        return value.legacy_wire
 class AgentRequest(BaseModel):
     model_config=ConfigDict(extra='forbid');message:str=Field(min_length=1,max_length=50000);conversation_id:str|None=None;model:str|None=None;approved_permissions:set[Permission]=Field(default_factory=set)
 class ExecutionError(BaseModel):
