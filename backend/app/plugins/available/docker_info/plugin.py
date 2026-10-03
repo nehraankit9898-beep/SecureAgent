@@ -47,7 +47,7 @@ class DockerInspect(Tool):
         self.enabled = available
         self.disabled_reason = None if available else "TERMINAL_UNAVAILABLE: Linux terminal backend is required"
 
-    async def run(self, args: dict[str, Any]) -> dict[str, Any]:
+    async def invoke(self, args: dict[str, Any]) -> dict[str, Any]:
         if not _executor or not _executor.available:
             raise RuntimeError("TERMINAL_UNAVAILABLE")
         sections = []
