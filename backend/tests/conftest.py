@@ -10,7 +10,16 @@ os.environ.update({
     "SECURE_AGENT_TEST_SANDBOX_ENABLED":"false",
     "SECURE_AGENT_PYTHON_EXECUTION_BACKEND":"disabled",
     "SECURE_AGENT_ENABLE_AUTOMATION":"false",
+    # Tests are hermetic/offline even though the developer default permits
+    # approved public-internet HTTP tools.
     "SECURE_AGENT_ENABLE_NETWORK_TOOLS":"false",
+    "SECURE_AGENT_NETWORK_MODE":"disabled",
+    "SECURE_AGENT_WEB_SEARCH_ENABLED":"false",
+    "SECURE_AGENT_HTTP_REQUESTS_ENABLED":"false",
+    "SECURE_AGENT_ALLOW_LOCAL_NETWORK":"false",
+    "SECURE_AGENT_ALLOW_PRIVATE_NETWORK":"false",
+    "SECURE_AGENT_ALLOW_EXTERNAL_NETWORK":"false",
+    "SECURE_AGENT_BROWSER_ENABLED":"false",
     # Linux-native terminal backend under test; commands run inside the
     # workspace jail with the command policy engine in front of every shell.
     # The new RESTRICTED_AGENT mode wraps commands in a user+pid+net

@@ -28,7 +28,7 @@
       "auto_off_on_exit": true
     },
     "network": {
-      "mode": "disabled",
+      "mode": "full",
       "allowed_destinations": [],
       "blocked_destinations": []
     },

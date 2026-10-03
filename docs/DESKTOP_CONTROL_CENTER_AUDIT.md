@@ -184,7 +184,7 @@ terminal:     {enabled: true,  restricted_mode: true, command_approval: true, al
                allow_network: false, max_command_time_seconds: 30, max_commands_per_task: 12,
                max_output_bytes: 200000}
 host_control: {enabled: false, auto_off_on_exit: true}
-network:      {mode: "disabled", allowed_destinations: [], blocked_destinations: []}
+network:      {mode: "full", allowed_destinations: [], blocked_destinations: []}  # Settings narrow defaults to public external only
 sudo:         {mode: "disabled"}
 filesystem:   {allowed_paths: [], protected_paths: [/etc/shadow, /etc/sudoers, ~/.ssh, …]}
 ai:           {enabled: true, ollama_enabled: true, model: null, temperature: null,

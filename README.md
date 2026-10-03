@@ -204,6 +204,26 @@ Limitations (BLOCKED on environment, not on code — the app reports each of the
 
 ---
 
+## Default permissions and network policy
+
+Fresh installs enable the **restricted Linux terminal** and bounded HTTP
+network tools. External requests require approval; DNS is pinned and response,
+timeout, and rate limits apply. The default network profile permits public
+external destinations only: localhost/private-LAN targets and cloud metadata
+addresses remain blocked. Terminal processes themselves still have no network
+access by default. Web search remains opt-in: it requires a trusted SearXNG
+endpoint to be configured and the search switch to be explicitly enabled.
+
+Host Control and sudo remain off; terminal stays in the restricted sandbox.
+Automation/autonomous and multi-agent execution, voice/microphone, physical
+mouse/keyboard input, browser automation, browser downloads/uploads, plugins,
+MCP/external integrations, remote AI providers, and Python/test-container
+execution remain opt-in. High-risk actions still require approval, and the
+mandatory command/filesystem/network/approval/audit/redaction protections stay
+on.
+
+---
+
 ## Safety boundary
 
 SecureAgent is intended for use on **your own authorized local Linux machines**. It implements defensive and administrative security functionality. It does NOT add malware, persistence intended to evade detection, credential theft, stealth mechanisms, destructive autonomous behavior, or unauthorized access. For security testing, an authorized target/context is required.

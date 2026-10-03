@@ -98,8 +98,9 @@ class HostControlControls(BaseModel):
 
 class NetworkControls(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    # The five-tier network model. ``disabled`` is the safe default.
-    mode: NetworkMode = "disabled"
+    # The Settings-layer address-class switches narrow this master tier to
+    # public external destinations by default (no localhost/private LAN).
+    mode: NetworkMode = "full"
     allowed_destinations: list[str] = Field(default_factory=list, max_length=64)
     blocked_destinations: list[str] = Field(default_factory=list, max_length=64)
 

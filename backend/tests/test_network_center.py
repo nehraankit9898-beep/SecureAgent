@@ -39,12 +39,76 @@ def _center(tmp_path, *, mode="disabled", center_mode="disabled", **overrides) -
     return NetworkCenter(_config(tmp_path, network_mode=mode, **overrides))
 
 
+def test_default_profile_allows_approved_public_egress_only(tmp_path, monkeypatch):
+    # The test suite overrides defaults to stay offline. Remove only these
+    # network overrides so this test checks the real fresh-install profile.
+    for key in ("SECURE_AGENT_ENABLE_NETWORK_TOOLS", "SECURE_AGENT_NETWORK_MODE",
+                "SECURE_AGENT_WEB_SEARCH_ENABLED", "SECURE_AGENT_HTTP_REQUESTS_ENABLED",
+                "SECURE_AGENT_SEARXNG_BASE_URL", "SECURE_AGENT_REQUIRE_APPROVAL_FOR_EXTERNAL_NETWORK",
+                "SECURE_AGENT_ALLOW_LOCAL_NETWORK", "SECURE_AGENT_ALLOW_PRIVATE_NETWORK",
+                "SECURE_AGENT_ALLOW_EXTERNAL_NETWORK", "SECURE_AGENT_BLOCK_CLOUD_METADATA",
+                "SECURE_AGENT_ALLOW_CLOUD_METADATA", "SECURE_AGENT_TERMINAL_TOOLS_ENABLED",
+                "SECURE_AGENT_TERMINAL_BACKEND", "SECURE_AGENT_TERMINAL_ALLOW_SUDO",
+                "SECURE_AGENT_ENABLE_AUTOMATION", "SECURE_AGENT_AUTONOMOUS_MODE",
+                "SECURE_AGENT_BROWSER_ENABLED", "SECURE_AGENT_BROWSER_ALLOW_DOWNLOADS",
+                "SECURE_AGENT_BROWSER_ALLOW_UPLOADS", "SECURE_AGENT_REMOTE_PROVIDERS_ENABLED",
+                "SECURE_AGENT_COMPUTER_AGENT_ENABLED", "SECURE_AGENT_COMPUTER_AGENT_PHYSICAL_INPUT",
+                "SECURE_AGENT_INTEGRATIONS_ENABLED", "SECURE_AGENT_MCP_ENABLED",
+                "SECURE_AGENT_PLUGINS_ENABLED", "SECURE_AGENT_VOICE_ENABLED",
+                "SECURE_AGENT_PYTHON_EXECUTION_BACKEND"):
+        monkeypatch.delenv(key, raising=False)
+    config = Settings(
+        _env_file=None, environment="test", auth_required=True, api_token="x" * 40,
+        database_path=tmp_path / "default-state.db",
+        workspace_root=tmp_path / "default-workspace",
+    )
+    assert config.terminal_tools_enabled is True
+    assert config.terminal_backend == "linux"
+    assert config.terminal_allow_sudo is False
+    assert config.enable_network_tools is True
+    assert config.network_mode == "full"
+    assert config.http_requests_enabled is True
+    assert config.require_approval_for_external_network is True
+    assert config.allow_external_network is True
+    assert config.allow_local_network is False
+    assert config.allow_private_network is False
+    assert config.block_cloud_metadata is True
+    assert config.allow_cloud_metadata is False
+    assert config.web_search_enabled is False  # no SearXNG endpoint is configured
+    assert config.enable_automation is False
+    assert config.autonomous_mode is False
+    assert config.browser_enabled is False
+    assert config.browser_allow_downloads is False
+    assert config.browser_allow_uploads is False
+    assert config.computer_agent_enabled is False
+    assert config.computer_agent_physical_input is False
+    assert config.voice_enabled is False
+    assert config.integrations_enabled is False
+    assert config.mcp_enabled is False
+    assert config.remote_providers_enabled is False
+    assert config.plugins_enabled is False
+    assert config.python_execution_backend == "disabled"
+
+    gate = ControlCenter(tmp_path / "default-control-center.json")
+    network = NetworkCenter(config, control_center=gate)
+    effective = network.effective()
+    assert effective["mode"] == "full"
+    assert effective["network_tools_enabled"] is True
+    assert effective["allow_external_network"] is True
+    assert effective["allow_local_network"] is False
+    assert effective["allow_private_network"] is False
+    capabilities = {item["capability"]: item for item in network.capabilities()}
+    assert capabilities["http_request"]["allowed"] is True
+    assert capabilities["web_search"]["allowed"] is False
+    assert capabilities["web_search"]["reason"] == "NETWORK_SEARCH_NOT_CONFIGURED"
+
+
 # --------------------------------------------------------------------------- #
 # Secure defaults and the intersection rule                                    #
 # --------------------------------------------------------------------------- #
 
 
-def test_network_off_by_default(tmp_path):
+def test_disabled_network_policy_blocks_capabilities(tmp_path):
     center = _center(tmp_path)
     effective = center.effective()
     assert effective["mode"] == "disabled"
@@ -284,7 +348,7 @@ def client():
         yield test_client
 
 
-def test_network_api_status_defaults_off(client):
+def test_network_api_status_respects_offline_test_configuration(client):
     body = client.get("/api/v1/network").json()
     assert body["effective"]["mode"] == "disabled"
     assert body["effective"]["network_tools_enabled"] is False

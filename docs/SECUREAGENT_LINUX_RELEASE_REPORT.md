@@ -105,14 +105,21 @@ honestly reports `AI_REASONING_UNAVAILABLE` for generative requests.
 
 ### 4) Default permissions
 
-- `terminal_tools_enabled=false` by default → terminal subsystem OFF until
-  enabled in `.env` (below) or Settings.
-- Approval mode `high-risk`: SAFE/LOW commands run; REQUIRES_APPROVAL/HIGH
-  need explicit approval; BLOCKED can never be approved.
+- The restricted Linux terminal is enabled by default and fails closed unless
+  the complete bubblewrap sandbox is usable. Host Control and sudo remain off.
+- Bounded HTTP tools permit approved public external egress; localhost/private
+  targets stay blocked. Web search remains opt-in and requires SearXNG.
+- Automation, browser, voice, physical input, MCP, and remote AI providers stay
+  opt-in. Approval mode `high-risk` remains active; BLOCKED actions cannot be
+  approved.
 - No persistent grants exist by default; every agent permission grant expires
   with its session (30-minute sliding TTL).
 
-### 5) Enable the Linux terminal agent + workflows
+### 5) Configure the Linux terminal agent + workflows
+
+The restricted Linux terminal is already enabled by default. Keep the following
+values explicit when provisioning a new environment; execution still fails
+closed if bubblewrap isolation is unavailable.
 
 ```bash
 cat >> .env <<'EOF'

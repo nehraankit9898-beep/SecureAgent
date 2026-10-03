@@ -31,10 +31,18 @@ it. Host Control does not automatically activate an executor after restart.
 
 ## Feature versus authorization
 
-- Terminal enabled does not authorize Host Control or sudo.
-- Host Control requires a user-confirmed switch and mode change.
-- Network enabled remains constrained by destination policy.
-- Tools remain constrained by per-tool permission and approval.
+- Fresh installs enable the Linux terminal tool, but execution remains in
+  `RESTRICTED_AGENT` and fails closed unless the full bubblewrap sandbox is
+  usable. Terminal enablement does not authorize Host Control or sudo.
+- Host Control requires a user-confirmed switch and mode change; sudo remains
+  separately disabled by default.
+- The default HTTP network profile permits approved public external egress.
+  Settings narrow the broad network tier to external addresses only: localhost,
+  private LAN, link-local, reserved and cloud-metadata destinations remain
+  blocked. Terminal command networking stays off. Web search requires an
+  explicitly configured SearXNG endpoint and an explicit feature enable.
+- Tools remain constrained by per-tool permission and approval; high-risk and
+  external network tool calls require approval.
 - Emergency Stop overrides all high-impact feature settings.
 
 ## Migration rule

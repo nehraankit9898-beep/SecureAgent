@@ -21,7 +21,7 @@ async def test_ssrf_targets_are_blocked(url):
         await validate_url(url)
 
 
-def test_network_disabled_by_default(tmp_path):
+def test_web_search_disabled_in_offline_test_configuration(tmp_path):
     config = Settings(environment="test", database_path=tmp_path/"db.sqlite", workspace_root=tmp_path/"workspace")
     config.workspace_root.mkdir()
     search = next(item for item in _build_registry(config, config.workspace_root).definitions() if item.name == "web_search")

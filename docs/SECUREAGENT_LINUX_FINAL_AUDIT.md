@@ -218,13 +218,18 @@ Returns `SENSITIVE_RESOURCE_BLOCKED: '<path>' is <description>` when blocked.
 
 **Five-tier model** (spec section 9):
 
-| Mode | local | private | external | Use case |
-|------|-------|---------|----------|----------|
-| `disabled` (default) | ✗ | ✗ | ✗ | No network tools at all |
-| `localhost` / `local` | ✓ | ✗ | ✗ | Loopback only |
-| `private` | ✓ | ✓ | ✗ | Loopback + RFC 1918 LAN |
-| `external` | ✓ | ✓ | ✓ | Full outbound, no metadata |
-| `full` | ✓ | ✓ | ✓ | All destinations |
+| Mode | Network ceiling |
+|------|-----------------|
+| `disabled` | No network tools or destinations |
+| `localhost` / `local` | Loopback only |
+| `private` | Loopback and private LAN; no public egress |
+| `external` | Public egress, with lower address classes controlled by their switches |
+| `full` | Highest tier; effective destinations are still narrowed by Settings address-class switches |
+
+Fresh installs use the `full` tier with public external egress enabled and
+localhost/private-LAN access disabled. Thus “full” is not an unconditional
+allow-all: SSRF validation and address-class switches still apply. Web search
+remains opt-in and requires a configured SearXNG endpoint and explicit enablement.
 
 **SSRF defences** (`backend/app/network_security.py`):
 
