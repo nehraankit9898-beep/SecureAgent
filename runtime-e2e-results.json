@@ -1,12 +1,12 @@
 {
-  "generated_at": "2026-10-02T11:21:52.051464+00:00",
+  "generated_at": "2026-10-03T12:21:40.783806+00:00",
   "results": [
     {
       "test": "Backend startup",
       "status": "PASS",
       "evidence": {
-        "pid": 4051,
-        "port": 54399
+        "pid": 6421,
+        "port": 55387
       }
     },
     {
@@ -14,7 +14,7 @@
       "status": "PASS",
       "evidence": {
         "status": "ok",
-        "version": "1.3.4",
+        "version": "2.0.0",
         "backend": "ok",
         "database": "ok",
         "workspace": "ok",
@@ -27,7 +27,40 @@
         "agent": "local_tools_ready",
         "automation": "enabled",
         "python_sandbox": "disabled",
-        "provider": "LOCAL CORE"
+        "provider": "LOCAL CORE",
+        "health_v2": {
+          "overall": "READY",
+          "database": "READY",
+          "workspace": "READY",
+          "ollama": "NOT_INSTALLED",
+          "chat_model": "NOT_CONFIGURED",
+          "embedding_model": "NOT_CONFIGURED",
+          "terminal": "DEGRADED",
+          "tools": "READY",
+          "configuration": "READY",
+          "permissions": "READY",
+          "logs": "READY",
+          "automation": "READY",
+          "python_sandbox": "NOT_AVAILABLE",
+          "provider": "LOCAL CORE",
+          "emergency_stopped": false
+        },
+        "tool_counts": {
+          "enabled": 20,
+          "total": 38,
+          "disabled": 18
+        },
+        "ollama_detail": {
+          "on_path": false,
+          "reachable": false,
+          "models": [],
+          "last_error": {
+            "code": "OLLAMA_SERVICE_STOPPED",
+            "message": "The Ollama service is not reachable.",
+            "component": "ollama",
+            "recovery_action": "Start Ollama and test the connection."
+          }
+        }
       }
     },
     {
@@ -80,14 +113,14 @@
         "status": "completed",
         "answer": "4",
         "task": {
-          "id": "71c19b95-bf88-46f9-89b1-b1a751e72243",
-          "conversation_id": "96c4912f-a2d1-487d-878d-68c243a389c9",
+          "id": "44f0f226-116b-48b3-82c1-510485429395",
+          "conversation_id": "4eacb6cc-3d2f-44ac-9727-2d45ab410803",
           "goal": "calculate 2+2",
           "intent": "calculation",
           "status": "completed",
           "steps": [
             {
-              "id": "b1a4be6c-0876-478b-a8d7-e29049aa7dbe",
+              "id": "627efe47-4222-4907-b379-3f35b8cf9904",
               "title": "Calculate expression",
               "tool": "calculator",
               "arguments": {
@@ -110,8 +143,8 @@
           "current_step": 1,
           "errors": [],
           "answer": "4",
-          "created_at": "2026-10-02T11:21:46.985459Z",
-          "updated_at": "2026-10-02T11:21:46.996519Z"
+          "created_at": "2026-10-03T12:21:35.491839Z",
+          "updated_at": "2026-10-03T12:21:35.517157Z"
         },
         "provider": "LOCAL CORE",
         "roles": [],
@@ -129,14 +162,14 @@
       "test": "Agent",
       "status": "PASS",
       "evidence": {
-        "id": "fac62ec7-c5d9-4e06-a754-7d83c14dee55",
-        "conversation_id": "e06458f9-6ec6-46ee-a959-056c67293886",
+        "id": "56eac130-34ca-49a9-983a-ebf3eff08bef",
+        "conversation_id": "de901dde-6ab5-4348-b86a-cddf015d46b1",
         "goal": "calculate 6*7",
         "intent": "calculation",
         "status": "completed",
         "steps": [
           {
-            "id": "bfb9f876-9b57-476b-b33f-59c85faa3286",
+            "id": "6c8d9c53-677b-46fa-899a-9d61f767310d",
             "title": "Calculate expression",
             "tool": "calculator",
             "arguments": {
@@ -159,22 +192,22 @@
         "current_step": 1,
         "errors": [],
         "answer": "42",
-        "created_at": "2026-10-02T11:21:46.999725Z",
-        "updated_at": "2026-10-02T11:21:47.010273Z"
+        "created_at": "2026-10-03T12:21:35.521639Z",
+        "updated_at": "2026-10-03T12:21:35.546737Z"
       }
     },
     {
       "test": "Permissions",
       "status": "PASS",
       "evidence": {
-        "id": "d0ae6fc4-c137-4f0c-9fce-cda99b01347d",
-        "conversation_id": "ddbc4804-d379-49f6-9d3f-974aa0a53c35",
+        "id": "63ff6c4c-5727-4856-a2ca-4e95d09981b2",
+        "conversation_id": "60658719-6963-4418-b7b6-2ba18e465fc6",
         "goal": "list files in the workspace",
         "intent": "files",
         "status": "waiting_confirmation",
         "steps": [
           {
-            "id": "0a6d43b2-003c-46e3-a4b7-b2fa79b3c13f",
+            "id": "13c09878-85f2-4899-ba4e-8685c76135fe",
             "title": "List workspace files",
             "tool": "list_files",
             "arguments": {
@@ -197,22 +230,22 @@
         "current_step": 0,
         "errors": [],
         "answer": null,
-        "created_at": "2026-10-02T11:21:47.012933Z",
-        "updated_at": "2026-10-02T11:21:47.023703Z"
+        "created_at": "2026-10-03T12:21:35.551483Z",
+        "updated_at": "2026-10-03T12:21:35.598469Z"
       }
     },
     {
       "test": "Approval",
       "status": "PASS",
       "evidence": {
-        "id": "d0ae6fc4-c137-4f0c-9fce-cda99b01347d",
-        "conversation_id": "ddbc4804-d379-49f6-9d3f-974aa0a53c35",
+        "id": "63ff6c4c-5727-4856-a2ca-4e95d09981b2",
+        "conversation_id": "60658719-6963-4418-b7b6-2ba18e465fc6",
         "goal": "list files in the workspace",
         "intent": "files",
         "status": "completed",
         "steps": [
           {
-            "id": "0a6d43b2-003c-46e3-a4b7-b2fa79b3c13f",
+            "id": "13c09878-85f2-4899-ba4e-8685c76135fe",
             "title": "List workspace files",
             "tool": "list_files",
             "arguments": {
@@ -244,8 +277,8 @@
         "current_step": 1,
         "errors": [],
         "answer": "Verified local tool results: [{\"step\": \"List workspace files\", \"tool\": \"list_files\", \"output\": {\"entries\": [{\"path\": \"sample.txt\", \"type\": \"file\", \"size\": 29}], \"truncated\": false}}]",
-        "created_at": "2026-10-02T11:21:47.012933Z",
-        "updated_at": "2026-10-02T11:21:47.028684Z"
+        "created_at": "2026-10-03T12:21:35.551483Z",
+        "updated_at": "2026-10-03T12:21:35.607052Z"
       }
     },
     {
@@ -257,11 +290,35 @@
       "test": "Memory create",
       "status": "PASS",
       "evidence": {
-        "id": "a9a91e0a-dbb3-4e51-853b-6c4b6b9d0eb9",
-        "content": "persist-1790940107030578616",
+        "id": "42694c26-1d00-4710-96f3-e405163254c9",
+        "content": "persist-1791030095610421931",
         "category": "runtime",
-        "created_at": "2026-10-02T11:21:47.031624Z",
-        "updated_at": "2026-10-02T11:21:47.031624Z"
+        "created_at": "2026-10-03T12:21:35.611629Z",
+        "updated_at": "2026-10-03T12:21:35.611629Z"
+      }
+    },
+    {
+      "test": "Automation gate (switch OFF)",
+      "status": "PASS",
+      "evidence": {
+        "status": 409,
+        "body": {
+          "success": false,
+          "error": {
+            "code": "AUTOMATION_DISABLED",
+            "message": "Enable Automation (and Scheduled Tasks) in the Control Center",
+            "details": {}
+          },
+          "request_id": "runtime-e2e-0001"
+        }
+      }
+    },
+    {
+      "test": "Automation switch enabled",
+      "status": "PASS",
+      "evidence": {
+        "status": 200,
+        "revision": 2
       }
     },
     {
@@ -270,17 +327,17 @@
       "evidence": {
         "approval": {
           "ok": true,
-          "schedule_id": "ea7d4a0f-5229-4977-9c5d-69b7f6df643f",
+          "schedule_id": "d11eb0a6-3508-42b9-887c-8d41f1086083",
           "status": "approved"
         },
         "run": {
-          "id": "6d21b9b9-cd4e-4896-b267-47b2e8f40085",
-          "schedule_id": "ea7d4a0f-5229-4977-9c5d-69b7f6df643f",
+          "id": "94239896-ddf0-49d9-9151-0b60b648b056",
+          "schedule_id": "d11eb0a6-3508-42b9-887c-8d41f1086083",
           "status": "completed",
-          "task_id": "3af195eb-c912-4f8b-b28c-8a709d35eec7",
+          "task_id": "bf31479e-674b-4a74-a8ce-9520a3c95c65",
           "answer": "81",
           "errors": [],
-          "created_at": "2026-10-02T11:21:50.848624+00:00"
+          "created_at": "2026-10-03T12:21:39.311461+00:00"
         }
       }
     },
@@ -334,7 +391,88 @@
           "component": "ollama",
           "recovery_action": "Start Ollama and test the connection."
         },
-        "base_url": "http://127.0.0.1:11434"
+        "base_url": "http://127.0.0.1:11434",
+        "providers": [],
+        "routing": {
+          "chat": {
+            "route": "chat",
+            "mode": "local_first",
+            "provider": null,
+            "model": null,
+            "reason": "no configured provider available",
+            "fallback_chain": []
+          },
+          "planner": {
+            "route": "planner",
+            "mode": "local_first",
+            "provider": null,
+            "model": null,
+            "reason": "no configured provider available",
+            "fallback_chain": []
+          },
+          "coding": {
+            "route": "coding",
+            "mode": "local_first",
+            "provider": null,
+            "model": null,
+            "reason": "no configured provider available",
+            "fallback_chain": []
+          },
+          "vision": {
+            "route": "vision",
+            "mode": "local_first",
+            "provider": null,
+            "model": null,
+            "reason": "no configured provider available",
+            "fallback_chain": []
+          },
+          "security": {
+            "route": "security",
+            "mode": "local_first",
+            "provider": null,
+            "model": null,
+            "reason": "no configured provider available",
+            "fallback_chain": []
+          },
+          "reviewer": {
+            "route": "reviewer",
+            "mode": "local_first",
+            "provider": null,
+            "model": null,
+            "reason": "no configured provider available",
+            "fallback_chain": []
+          },
+          "embedding": {
+            "route": "embedding",
+            "mode": "local_first",
+            "provider": null,
+            "model": null,
+            "reason": "no configured provider available",
+            "fallback_chain": []
+          },
+          "fast": {
+            "route": "fast",
+            "mode": "local_first",
+            "provider": null,
+            "model": null,
+            "reason": "no configured provider available",
+            "fallback_chain": []
+          }
+        },
+        "provider_policy": {
+          "remote_providers_allowed": false,
+          "settings_remote_switch": false,
+          "control_center_remote_switch": false,
+          "ai_active": true,
+          "routing_mode": "local_first"
+        },
+        "secret_store": {
+          "backend": "encrypted-file",
+          "stores_os_vault": false,
+          "file": "/home/user/SecureAgent/data/providers.secrets",
+          "providers_with_keys": [],
+          "encrypted": true
+        }
       }
     },
     {
@@ -343,14 +481,11 @@
       "evidence": {
         "success": false,
         "error": {
-          "code": "OLLAMA_SERVICE_STOPPED",
-          "message": "The Ollama service is not reachable.",
-          "details": {
-            "component": "ollama",
-            "recovery_action": "Start Ollama and test the connection."
-          }
+          "code": "INTERNAL_ERROR",
+          "message": "The request could not be completed.",
+          "details": {}
         },
-        "request_id": "runtime-e2e-0001"
+        "request_id": "-"
       }
     },
     {
@@ -369,9 +504,12 @@
       "evidence": {
         "success": false,
         "error": {
-          "code": "NETWORK_DISABLED",
-          "message": "Network tools are disabled by policy",
-          "details": {}
+          "code": "NETWORK_TOOLS_DISABLED",
+          "message": "network tools are disabled in Settings",
+          "details": {
+            "component": "network",
+            "recovery_action": "Enable network tools in Settings and apply."
+          }
         },
         "request_id": "runtime-e2e-0001"
       }
@@ -400,7 +538,11 @@
       "evidence": [
         "approval.granted",
         "approval.required",
+        "config.updated",
+        "control.loaded",
+        "control.recovered",
         "memory.created",
+        "network.test",
         "schedule.approved",
         "schedule.created",
         "schedule.executed",
@@ -414,11 +556,11 @@
       "status": "PASS",
       "evidence": [
         {
-          "id": "a9a91e0a-dbb3-4e51-853b-6c4b6b9d0eb9",
-          "content": "persist-1790940107030578616",
+          "id": "42694c26-1d00-4710-96f3-e405163254c9",
+          "content": "persist-1791030095610421931",
           "category": "runtime",
-          "created_at": "2026-10-02T11:21:47.031624Z",
-          "updated_at": "2026-10-02T11:21:47.031624Z"
+          "created_at": "2026-10-03T12:21:35.611629Z",
+          "updated_at": "2026-10-03T12:21:35.611629Z"
         }
       ]
     },
