@@ -1,6 +1,6 @@
-# Compiled and build artifacts
+# Compiled/Binary files
 __pycache__/
 *.pyc
 
-# Test data and database files (generated/stateful)
+# Logs and temp files
 .pytest-data/
