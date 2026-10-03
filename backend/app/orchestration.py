@@ -39,7 +39,13 @@ class Orchestrator:
         # Control Center gates and audit trail. The single-agent ManagerAgent
         # remains the fallback for every unrouted request and any failure.
         from app.multi_agent import MultiAgentManager, build_roles
-        self.multi_agent=MultiAgentManager(agent,build_roles(agent.tools))
+        # ``settings_fn`` is read at CALL time (not import time) so tests and
+        # embedding applications can monkeypatch ``app.multi_agent.settings``
+        # after construction and still drive fresh configuration. Production
+        # always resolves to the cached global ``settings()``.
+        self.multi_agent = MultiAgentManager(
+            agent, build_roles(agent.tools),
+            settings_fn=lambda: __import__("app.multi_agent", fromlist=["settings"]).settings())
     async def run(self,request):
         if _multi_agent_enabled():
             try:

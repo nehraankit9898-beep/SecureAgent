@@ -109,6 +109,7 @@ def _patch_settings(monkeypatch, **overrides):
         "multi_agent_enabled": True,
         "max_agent_depth": 2,
         "agent_timeout_seconds": 30,
+        "multi_agent_max_runtime_seconds": 30,
         "multi_agent_max_tokens": 500_000,
         "multi_agent_max_tool_calls": 20,
         "multi_agent_max_concurrent_workers": 2,
@@ -119,6 +120,10 @@ def _patch_settings(monkeypatch, **overrides):
     monkeypatch.setenv("SECURE_AGENT_ENV_FILE", "/nonexistent.env")
     for key, value in values.items():
         monkeypatch.setenv(key, value)
+    # The global ``settings()`` is lru-cached at import time, so env changes
+    # alone never reach the manager. Point the cache at a fresh factory that
+    # re-reads the (monkeypatched) environment on every call.
+    monkeypatch.setattr("app.multi_agent.settings", lambda: Settings())
 
 
 # --------------------------------------------------------------------------- #

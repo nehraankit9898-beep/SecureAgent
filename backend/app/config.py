@@ -56,6 +56,12 @@ class Settings(BaseSettings):
     # calls/concurrency; reviewer validation before completion). Every action
     # still passes the central Registry/Control Center/approval pipeline.
     multi_agent_enabled: bool = False
+    # Wall-clock ceiling for ONE whole multi-agent run (all workers combined).
+    # Deliberately separate from ``agent_timeout_seconds`` (the single-agent
+    # per-run timeout) so lowering the per-request agent timeout can never
+    # silently shrink the multi-agent runtime budget. Clamped to [5, 900] by
+    # app.multi_agent.MultiAgentBudgets regardless of this value.
+    multi_agent_max_runtime_seconds: float = Field(900, ge=5, le=900)
     multi_agent_max_tokens: int = Field(500_000, ge=10_000, le=10_000_000)
     multi_agent_max_tool_calls: int = Field(20, ge=1, le=50)
     multi_agent_max_concurrent_workers: int = Field(2, ge=1, le=4)
