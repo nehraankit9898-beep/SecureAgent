@@ -1,6 +1,6 @@
-# Python
+# Compiled and build artifacts
 __pycache__/
 *.pyc
 
-# Test data and artifacts
+# Test data and state files
 .pytest-data/
