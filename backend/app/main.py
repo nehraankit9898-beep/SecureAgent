@@ -25,6 +25,8 @@ from app.browser.api import build_browser_router
 from app.browser.policy import BrowserPolicyError
 from app.browser.runtime import BrowserRuntime, set_browser_runtime
 from app.model_api import build_model_router_api, provider_error_status
+from app.network_api import build_network_center_router
+from app.network_center import NetworkCenter, NetworkCenterError
 from app.providers import ProviderError, ProviderRuntime, RoutingProvider
 from app.voice.api import build_voice_router
 from app.voice.pipeline import VoiceError, VoicePipeline
@@ -52,6 +54,10 @@ set_browser_runtime(browser_runtime)
 async def _emergency_close_browser_sessions():
     """EMERGENCY STOP: close every browser context (cookies/storage dropped)."""
     return {"closed_sessions": await browser_runtime.close_all()}
+
+
+# --- Network Center (effective policy = Settings ∩ Control Center) --------- #
+network_center = NetworkCenter(config, control_center=control_center, store=store)
 
 
 # --- Phase 13 model providers (registry + router; remote OFF by default) --- #
@@ -252,6 +258,19 @@ async def browser_policy_handler(request: Request, error: BrowserPolicyError):
         "request_id": request_id_var.get()}, status_code=status)
 
 
+@app.exception_handler(NetworkCenterError)
+async def network_center_error_handler(request: Request, error: NetworkCenterError):
+    """Structured network refusal (never invents connectivity)."""
+    from app.network_api import network_error_status
+    return JSONResponse({"success": False, "error": {
+        "code": error.code,
+        "message": (error.message or error.code)[:500],
+        "details": {"component": "network",
+                    "recovery_action": error.recovery or
+                    "Review the Network Center policy."}},
+        "request_id": request_id_var.get()}, status_code=network_error_status(error.code))
+
+
 @app.exception_handler(ProviderError)
 async def provider_error_handler(request: Request, error: ProviderError):
     """Structured, secret-free provider failure (never echoes a key)."""
@@ -333,6 +352,7 @@ app.include_router(build_browser_router(config.api_prefix + "/browser"))
 app.include_router(build_voice_router(voice_pipeline, config.api_prefix + "/voice"))
 app.include_router(build_model_router_api(provider_runtime, routing_provider,
                                           config.api_prefix + "/models"))
+app.include_router(build_network_center_router(network_center, config.api_prefix + "/network"))
 
 
 @app.get(config.api_prefix + "/auth/status")
@@ -670,25 +690,20 @@ async def test_ollama_embedding():
 @app.post(config.api_prefix + "/network/test")
 @app.get(config.api_prefix + "/network/test")
 async def test_network():
-    gate = get_control_center()
-    if gate is not None and not gate.workflows_active() and gate.state.network.mode == "disabled":
-        # The Control Center NETWORK master switch is the runtime authority.
-        raise HTTPException(409, "NETWORK_DISABLED: The Network master switch is OFF in the Control Center")
-    if not config.enable_network_tools or config.network_mode == "disabled":
-        raise HTTPException(409, "NETWORK_DISABLED: Network tools are disabled by policy")
-    if not config.searxng_base_url:
-        raise HTTPException(409, "NETWORK_NOT_CONFIGURED: SearXNG URL is required")
+    """Real connectivity test. Delegates to the Network Center so the effective
+    (Settings ∩ Control Center) policy and the structured refusal codes are the
+    single source of truth — nothing is faked when the provider is unreachable."""
     started = perf_counter()
     try:
-        body = await SafeHttpClient(config.network_timeout_seconds, config.network_max_response_bytes, config.allow_local_network, config.allow_private_network, config.allow_external_network, config.dns_enabled).get_json(str(config.searxng_base_url).rstrip('/') + '/search', params={'q':'SecureAgent connectivity test','format':'json'})
-        count = len(body.get('results', [])) if isinstance(body.get('results'), list) else 0
-        result = {"status":"CONNECTED","provider":"SearXNG","result_count":count,"duration_ms":int((perf_counter()-started)*1000)}
-        await store.audit("network.test", result)
-        return result
-    except Exception as error:
-        await store.audit("network.test", {"status":"FAILED","error":str(error)[:300]})
-        if isinstance(error, NetworkPolicyError): raise
-        raise HTTPException(503, "NETWORK_UNAVAILABLE: SearXNG did not respond") from error
+        probe = await network_center.test_search()
+    except NetworkCenterError as error:
+        await store.audit("network.test", {"status": "FAILED", "error": error.code})
+        raise
+    result = {"status": "CONNECTED", "provider": probe["provider"],
+              "result_count": probe["result_count"], "mode": probe["mode"],
+              "duration_ms": int((perf_counter() - started) * 1000)}
+    await store.audit("network.test", result)
+    return result
 
 
 def _agent_request(request: AgentRequest | ChatRequest) -> AgentRequest:
