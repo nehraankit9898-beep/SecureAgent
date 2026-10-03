@@ -8,12 +8,60 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 ENV_FILE = PROJECT_ROOT / ".env"
+ENV_PREFIX = "SECURE_AGENT_"
+
+
+def _clamped_number(field: str, value, minimum: float, maximum: float,
+                    *, integer: bool = False):
+    """Clamp an over/under-limit budget-shaped setting instead of failing.
+
+    The multi-agent budgets (depth, runtime, tokens, tool calls, concurrency)
+    and the single-agent timeout are HARD platform ceilings that
+    ``app.multi_agent.MultiAgentBudgets`` re-enforces at every run. A
+    configuration value beyond the ceiling is therefore narrowed here (a
+    fail-safe clamp) rather than turned into a startup failure, so a stale or
+    over-eager ``.env`` can never widen the ceilings — and can never prevent
+    the backend from starting. Anything non-numeric is still rejected.
+    """
+    if isinstance(value, bool):
+        raise ValueError(f"{field} must be a number, not a boolean")
+    try:
+        number = int(value) if integer else float(value)
+    except (TypeError, ValueError) as error:
+        raise ValueError(f"{field} must be a number") from error
+    if integer:
+        return max(int(minimum), min(number, int(maximum)))
+    return max(float(minimum), min(number, float(maximum)))
 
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
-        env_file=ENV_FILE, env_prefix="SECURE_AGENT_", extra="ignore"
+        env_file=ENV_FILE, env_prefix=ENV_PREFIX, extra="ignore"
     )
+
+    @model_validator(mode="before")
+    @classmethod
+    def accept_env_style_keys(cls, data):
+        """Accept ``SECURE_AGENT_<FIELD>`` keyword arguments as field values.
+
+        Embedding applications, the desktop launcher and tests construct
+        ``Settings(SECURE_AGENT_MAX_AGENT_DEPTH=4, ...)``. Environment
+        variables and field-name keywords keep working unchanged; an
+        environment-style keyword is only a spelling of the field name and
+        never overrides an explicitly supplied field name.
+        """
+        if not isinstance(data, dict):
+            return data
+        fields = set(cls.model_fields)
+        normalized: dict = {}
+        for key, value in data.items():
+            if isinstance(key, str) and key.startswith(ENV_PREFIX):
+                name = key[len(ENV_PREFIX):].lower()
+                if name in fields:
+                    normalized.setdefault(name, value)
+                    continue
+            normalized[key] = value
+        return normalized
 
     app_name: str = "SecureAgent"
     api_prefix: str = "/api/v1"
@@ -231,6 +279,34 @@ class Settings(BaseSettings):
     rate_limit_tools: int = Field(60, ge=1, le=5_000)
     rate_limit_automation: int = Field(20, ge=1, le=5_000)
     cors_origins: list[str] = ["http://localhost:5173", "http://127.0.0.1:5173"]
+
+    @field_validator("max_agent_depth", mode="before")
+    @classmethod
+    def clamp_agent_depth(cls, value):
+        return _clamped_number("max_agent_depth", value, 1, 4, integer=True)
+
+    @field_validator("multi_agent_max_concurrent_workers", mode="before")
+    @classmethod
+    def clamp_concurrent_workers(cls, value):
+        return _clamped_number("multi_agent_max_concurrent_workers", value, 1, 4, integer=True)
+
+    @field_validator("multi_agent_max_tool_calls", mode="before")
+    @classmethod
+    def clamp_tool_calls(cls, value):
+        return _clamped_number("multi_agent_max_tool_calls", value, 1, 50, integer=True)
+
+    @field_validator("multi_agent_max_tokens", mode="before")
+    @classmethod
+    def clamp_tokens(cls, value):
+        return _clamped_number("multi_agent_max_tokens", value, 10_000, 10_000_000, integer=True)
+
+    @field_validator("agent_timeout_seconds", "multi_agent_max_runtime_seconds", mode="before")
+    @classmethod
+    def clamp_agent_timeouts(cls, value, info):
+        bounds = {"agent_timeout_seconds": (2.0, 900.0),
+                  "multi_agent_max_runtime_seconds": (5.0, 900.0)}
+        low, high = bounds[info.field_name]
+        return _clamped_number(info.field_name, value, low, high)
 
     @field_validator('ollama_model','embedding_model')
     @classmethod

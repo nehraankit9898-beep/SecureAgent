@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
-  "revision": 1,
-  "updated_at": "2026-10-03T10:44:23.079149+00:00",
+  "revision": 20,
+  "updated_at": "2026-10-03T12:02:07.172051+00:00",
   "updated_by": "system",
   "emergency_stopped": false,
   "state": {
