@@ -23,6 +23,10 @@ os.environ.update({
     "SECURE_AGENT_SECURITY_WORKFLOWS_ENABLED":"true",
     "SECURE_AGENT_DATABASE_PATH":str(Path(".pytest-data")/"state.db"),
     "SECURE_AGENT_WORKSPACE_ROOT":str(Path(".pytest-data")/"workspace"),
+    # Provider registry / secret store are hermetic per test session: tests
+    # must never read (or write) the developer's real provider configuration.
+    "SECURE_AGENT_PROVIDERS_CONFIG_PATH":str(Path(".pytest-data")/"providers.json"),
+    "SECURE_AGENT_REMOTE_PROVIDERS_ENABLED":"false",
 })
 
 # A previous session may have persisted a modified Control Center document
@@ -36,6 +40,10 @@ _PYTEST_DATA = _PROJECT_ROOT / ".pytest-data"
 for _stale in (
     _PYTEST_DATA / "control_center.json",
     _PYTEST_DATA / "control_center.json.bak",
+    _PYTEST_DATA / "providers.json",
+    _PYTEST_DATA / "providers.secrets",
+    _PYTEST_DATA / "providers.key",
+    _PYTEST_DATA / "providers.salt",
 ):
     try:
         _stale.unlink()

@@ -24,6 +24,8 @@ from app.network_security import NetworkPolicyError, SafeHttpClient
 from app.browser.api import build_browser_router
 from app.browser.policy import BrowserPolicyError
 from app.browser.runtime import BrowserRuntime, set_browser_runtime
+from app.model_api import build_model_router_api, provider_error_status
+from app.providers import ProviderError, ProviderRuntime, RoutingProvider
 from app.voice.api import build_voice_router
 from app.voice.pipeline import VoiceError, VoicePipeline
 from app.memory import MemoryStore
@@ -50,6 +52,11 @@ set_browser_runtime(browser_runtime)
 async def _emergency_close_browser_sessions():
     """EMERGENCY STOP: close every browser context (cookies/storage dropped)."""
     return {"closed_sessions": await browser_runtime.close_all()}
+
+
+# --- Phase 13 model providers (registry + router; remote OFF by default) --- #
+provider_runtime = ProviderRuntime(config, store=store, control_center=control_center)
+routing_provider = RoutingProvider(config, runtime=provider_runtime)
 
 
 # --- Phase 11 voice pipeline (push-to-talk; OFF by default) ---------------- #
@@ -245,6 +252,19 @@ async def browser_policy_handler(request: Request, error: BrowserPolicyError):
         "request_id": request_id_var.get()}, status_code=status)
 
 
+@app.exception_handler(ProviderError)
+async def provider_error_handler(request: Request, error: ProviderError):
+    """Structured, secret-free provider failure (never echoes a key)."""
+    return JSONResponse({"success": False, "error": {
+        "code": error.code,
+        "message": (error.message or error.code)[:500],
+        "details": {"component": "providers",
+                    "recovery_action": error.recovery or
+                    "Review the provider configuration in the Control Center."}},
+        "request_id": request_id_var.get()},
+        status_code=provider_error_status(error.code))
+
+
 @app.exception_handler(VoiceError)
 async def voice_error_handler(request: Request, error: VoiceError):
     approval = "APPROVAL" in error.code
@@ -311,6 +331,8 @@ async def security_middleware(request: Request, call_next):
 
 app.include_router(build_browser_router(config.api_prefix + "/browser"))
 app.include_router(build_voice_router(voice_pipeline, config.api_prefix + "/voice"))
+app.include_router(build_model_router_api(provider_runtime, routing_provider,
+                                          config.api_prefix + "/models"))
 
 
 @app.get(config.api_prefix + "/auth/status")

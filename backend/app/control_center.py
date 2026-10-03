@@ -144,6 +144,12 @@ class FilesystemControls(BaseModel):
     ])
 
 
+ROUTING_MODES = ("auto", "local_first", "cloud_first", "cost_aware", "speed_first",
+                 "privacy_first", "manual")
+ROUTING_ROUTES = ("chat", "planner", "coding", "vision", "security", "reviewer",
+                  "embedding", "fast")
+
+
 class AIControls(BaseModel):
     model_config = ConfigDict(extra="forbid")
     enabled: bool = True
@@ -154,6 +160,52 @@ class AIControls(BaseModel):
     max_tokens: int | None = Field(None, ge=128, le=131_072)
     tool_calling: bool = True
     planning: bool = True
+    # --- multi-model routing (Phase 13) ------------------------------------ #
+    # Remote/cloud providers stay OFF until the operator turns this on AND
+    # enables the same switch in Settings. Local providers (Ollama, or any
+    # provider whose base_url is loopback) are unaffected by this gate.
+    remote_providers_enabled: bool = False
+    routing_mode: Literal["auto", "local_first", "cloud_first", "cost_aware",
+                          "speed_first", "privacy_first", "manual"] = "local_first"
+    # Explicit per-route assignment as "<provider-id>:<model>". An assignment
+    # is honoured only when that provider is enabled+configured; otherwise the
+    # router falls back to the selected mode (never to an unconfigured vendor).
+    route_models: dict[str, str] = Field(default_factory=dict, max_length=32)
+    # Ordered provider preference for fallback. Providers not listed keep their
+    # mode-derived order and remain eligible after the listed ones.
+    fallback_chain: list[str] = Field(default_factory=list, max_length=16)
+
+    @field_validator("route_models")
+    @classmethod
+    def valid_route_models(cls, value: dict[str, str]) -> dict[str, str]:
+        for route, target in value.items():
+            if route not in ROUTING_ROUTES:
+                raise ValueError(f"unknown routing route: {route}")
+            if not isinstance(target, str) or not target.strip():
+                raise ValueError("route assignment must be '<provider>:<model>'")
+            if ":" not in target:
+                raise ValueError("route assignment must be '<provider>:<model>'")
+            provider_id = target.split(":", 1)[0]
+            if not provider_id or not all(character.islower() or character.isdigit()
+                                          or character in "._-"
+                                          for character in provider_id):
+                raise ValueError("route assignment provider id is invalid")
+        return value
+
+    @field_validator("fallback_chain")
+    @classmethod
+    def valid_fallback_chain(cls, value: list[str]) -> list[str]:
+        cleaned: list[str] = []
+        for item in value:
+            identifier = str(item).strip().lower()
+            if not identifier:
+                continue
+            if not all(character.islower() or character.isdigit() or character in "._-"
+                       for character in identifier):
+                raise ValueError("fallback chain entries must be provider ids")
+            if identifier not in cleaned:
+                cleaned.append(identifier)
+        return cleaned
 
 
 class MemoryControls(BaseModel):
@@ -706,6 +758,30 @@ class ControlCenter:
             "temperature": state.temperature,
             "context_size": state.context_size,
             "max_tokens": state.max_tokens,
+        }
+
+    def provider_routing(self) -> dict[str, Any]:
+        """Secret-free routing policy consumed by app.providers.ModelRouter.
+
+        Remote providers require BOTH the Settings switch and this Control
+        Center switch, so flipping either one OFF immediately stops egress.
+        """
+        state = self.state.ai
+        settings_allows = True
+        try:
+            from app.config import settings as _settings
+            settings_allows = bool(getattr(_settings(), "remote_providers_enabled", False))
+        except Exception:
+            settings_allows = False
+        return {
+            "remote_providers_enabled": bool(state.remote_providers_enabled and settings_allows),
+            "control_center_remote_switch": bool(state.remote_providers_enabled),
+            "settings_remote_switch": settings_allows,
+            "routing_mode": state.routing_mode,
+            "route_models": dict(state.route_models),
+            "fallback_chain": list(state.fallback_chain),
+            "ai_active": self.ai_active(),
+            "ollama_enabled": bool(state.ollama_enabled),
         }
 
     def browser_active(self) -> bool:

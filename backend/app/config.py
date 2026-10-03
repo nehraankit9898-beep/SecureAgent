@@ -87,6 +87,21 @@ class Settings(BaseSettings):
     max_embedding_values: int = Field(2_000_000, ge=1_000, le=20_000_000)
     max_embedding_input_chars: int = Field(100_000, ge=1_000, le=1_000_000)
 
+    # --- Phase 13: multi-model / API provider routing ------------------------ #
+    # Providers are DATA (a JSON registry), never code: the agent core talks to
+    # the router, and the router talks to whatever the user configured. Remote
+    # / cloud providers are OFF by default and require BOTH this switch and the
+    # Control Center ``ai.remote_providers_enabled`` switch before a request may
+    # leave the machine (local Ollama is unaffected). API keys are stored in
+    # the OS credential vault when available, otherwise in an encrypted 0600
+    # file next to the registry — never in logs, prompts, task history or API
+    # responses.
+    providers_config_path: Path = Path("data/providers.json")
+    remote_providers_enabled: bool = False
+    provider_secret_backend: Literal["auto", "keyring", "encrypted-file"] = "auto"
+    provider_request_timeout_seconds: float = Field(120, gt=0, le=600)
+    provider_max_response_bytes: int = Field(2_000_000, ge=10_000, le=20_000_000)
+
     database_path: Path = Path("data/secure_agent.db")
     workspace_root: Path = Path("workspace")
     max_agent_steps: int = Field(8, ge=1, le=20)
@@ -485,6 +500,8 @@ class Settings(BaseSettings):
             self.database_path = (PROJECT_ROOT / self.database_path).resolve()
         if not self.workspace_root.is_absolute():
             self.workspace_root = (PROJECT_ROOT / self.workspace_root).resolve()
+        if not self.providers_config_path.is_absolute():
+            self.providers_config_path = (PROJECT_ROOT / self.providers_config_path).resolve()
         return self
 
 
