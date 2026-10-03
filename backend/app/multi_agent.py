@@ -276,14 +276,34 @@ MULTI_AGENT_REJECTED_CODE = "MULTI_AGENT_REVIEW_REJECTED"
 
 
 class MultiAgentBudgets:
-    """Hard ceilings for one multi-agent run, clamped from settings."""
+    """Hard ceilings for one multi-agent run, clamped from settings.
+
+    The clamp bounds are the absolute platform limits: configuration can only
+    ever narrow these budgets, never widen them past what this module's
+    security review allows (fail closed).
+
+    ``max_depth`` is read with ``getattr`` (not pydantic ``__getitem__``) so a
+    raw over-limit value — e.g. an unvalidated Settings constructed in tests —
+    still clamps to the ceiling instead of erroring or passing through.
+    """
+
+    MAX_DEPTH_LIMIT = 4
+    MAX_RUNTIME_LIMIT_SECONDS = 900.0
+    MAX_TOKENS_LIMIT = 10_000_000
+    MAX_TOOL_CALLS_LIMIT = 50
+    MAX_CONCURRENT_WORKERS_LIMIT = 4
 
     def __init__(self, config):
-        self.max_depth = max(1, min(int(getattr(config, "max_agent_depth", 2)), 4))
-        self.total_runtime_seconds = max(5.0, min(float(config.agent_timeout_seconds), 900.0))
-        self.total_token_budget = max(10_000, min(int(getattr(config, "multi_agent_max_tokens", 500_000)), 10_000_000))
-        self.total_tool_calls = max(1, min(int(getattr(config, "multi_agent_max_tool_calls", 20)), 50))
-        self.max_concurrent_workers = max(1, min(int(getattr(config, "multi_agent_max_concurrent_workers", 2)), 4))
+        self.max_depth = max(1, min(int(getattr(config, "max_agent_depth", 2)),
+                                    self.MAX_DEPTH_LIMIT))
+        self.total_runtime_seconds = max(5.0, min(float(getattr(config, "agent_timeout_seconds", 180)),
+                                                  self.MAX_RUNTIME_LIMIT_SECONDS))
+        self.total_token_budget = max(10_000, min(int(getattr(config, "multi_agent_max_tokens", 500_000)),
+                                                  self.MAX_TOKENS_LIMIT))
+        self.total_tool_calls = max(1, min(int(getattr(config, "multi_agent_max_tool_calls", 20)),
+                                           self.MAX_TOOL_CALLS_LIMIT))
+        self.max_concurrent_workers = max(1, min(int(getattr(config, "multi_agent_max_concurrent_workers", 2)),
+                                                 self.MAX_CONCURRENT_WORKERS_LIMIT))
 
     def snapshot(self) -> dict[str, int | float]:
         return {"max_depth": self.max_depth, "total_runtime_seconds": self.total_runtime_seconds,
@@ -365,33 +385,78 @@ class MultiAgentManager:
         return []
 
     # ---- scoped execution ------------------------------------------------- #
-    def _scoped_core(self, role: AgentRole):
-        """Build a specialist Agent over a ScopedRegistry subset with EXACTLY
-        the role's tools/steps/timeouts. Permissions are NOT baked in here —
-        they are intersected per-request in ``_run_worker`` (fail closed)."""
-        from app.agent import Agent
+    def _build_specialist(self, role: AgentRole, allowed: list[str]):
+        """Construct the specialist over the stable single-agent loop.
+
+        Looked up as ``app.agent.Agent`` at call time so tests and embedding
+        applications can substitute the loop implementation; production always
+        resolves to the real Phase 2 agent (the ONLY execution engine).
+        """
+        from app import agent as agent_module
         from app.agents import ScopedRegistry
-        allowed = resolve_role_tools(role, self.core.tools)
         scoped_registry = ScopedRegistry(self.core.tools, allowed)
         # NOTE: persistent_permissions is intentionally empty. Delegation must
         # never inherit 'always allow' grants from the Permission Center — the
         # sub-agent can only use what the originating request explicitly
         # approved AND what its role spec permits (privilege monotonicity).
-        return Agent(self.core.llm, scoped_registry, self.core.memory,
-                     max_steps=min(role.max_steps, settings().max_agent_steps),
-                     max_tool_calls=role.tool_call_budget,
-                     session_approvals=self.core.session_approvals,
-                     execution_registry=self.core.execution_registry,
-                     persistent_permissions=frozenset(),
-                     planner_context=f"ROLE={role.name}. TOOLS={allowed}. POLICY={role.system_policy}")
+        # Settings are read fresh per construction so configuration changes
+        # (and test overrides) take effect immediately.
+        return agent_module.Agent(
+            self.core.llm, scoped_registry, self.core.memory,
+            max_steps=min(role.max_steps, settings().max_agent_steps),
+            max_tool_calls=role.tool_call_budget,
+            session_approvals=self.core.session_approvals,
+            execution_registry=self.core.execution_registry,
+            persistent_permissions=frozenset(),
+            planner_context=f"ROLE={role.name}. TOOLS={allowed}. POLICY={role.system_policy}")
+
+    def _scoped_core(self, role: AgentRole):
+        """Build a specialist over a ScopedRegistry subset with EXACTLY the
+        role's tools/steps/timeouts. Permissions are NOT baked in here — they
+        are intersected per-request in ``_run_worker`` (fail closed).
+
+        The returned adapter exposes ONLY ``run(request) -> Task``: the
+        manager cannot reach LLM, registry or memory through the specialist,
+        keeping the delegation path auditable and privilege-monotone. If the
+        substituted loop already returns an awaitable runner (test doubles),
+        it is passed through unchanged.
+        """
+        allowed = resolve_role_tools(role, self.core.tools)
+        agent = self._build_specialist(role, allowed)
+
+        class _ScopedSpecialist:
+            """Thin narrow-surface adapter around the single-agent loop."""
+
+            def __init__(self, inner):
+                self._agent = inner
+
+            async def run(self, request: AgentRequest) -> Task:
+                return await self._agent.run(request)
+
+        if hasattr(agent, "run"):
+            return _ScopedSpecialist(agent)
+        return agent
 
     async def _run_worker(self, name: str, instruction: str, state: SharedState,
                           request: AgentRequest, depth: int, budgets: MultiAgentBudgets,
                           spent: dict[str, int], deadline: float) -> tuple[WorkerReport, Task]:
-        from app.agent import Agent
         role = self.roles[name]
         scoped = self._scoped_core(role)
         granted = (request.approved_permissions & set(role.permissions)) - {Permission.ADMIN}
+        # Fail closed: a worker delegated with NO usable permissions can only
+        # ever produce unverified output; record an explicit blocked report
+        # instead of running it (and never claim completion afterwards).
+        if not granted:
+            await store.audit("multi_agent.blocked", {
+                "session_id": state.session_id, "agent": name, "depth": depth,
+                "reason": "no_permissions_after_intersection"})
+            stub = Task(goal=instruction[:500])
+            stub.status = TaskStatus.FAILED
+            stub.errors.append("delegation refused: role has no intersection with approved permissions")
+            return WorkerReport(agent=name, status="blocked",
+                                summary=f"Worker '{name}' blocked: no usable permissions after "
+                                        f"role intersection",
+                                notes=["approval required"]), stub
         worker_request = AgentRequest(message=instruction[:20_000],
                                       conversation_id=request.conversation_id,
                                       model=request.model,
@@ -406,9 +471,43 @@ class MultiAgentManager:
             "permissions": sorted(permission.value for permission in granted),
             "tools": role.allowed_tools,
         })
+
+        async def _execute() -> tuple[WorkerReport, Task]:
+            task = await scoped.run(worker_request)
+            successful = [step for step in task.steps if step.result and step.result.success]
+            failed_steps = [step for step in task.steps
+                            if step.status.value in {"failed", "cancelled"}
+                            or (step.result and not step.result.success)]
+            tokens = sum(estimate_tokens(json.dumps(step.result.model_dump(mode="json"), default=str))
+                         for step in successful) + estimate_tokens(task.answer or "")
+            status: str = "success"
+            if task.status == TaskStatus.WAITING:
+                status = "blocked"
+            elif task.status == TaskStatus.CANCELLED:
+                status = "cancelled"
+            elif failed_steps or task.status == TaskStatus.FAILED:
+                status = "failed"
+            report = WorkerReport(
+                agent=name, status=status,
+                summary=(task.answer or ";".join(task.errors) or f"worker {name} finished")[:4000],
+                evidence_step_ids=[step.id for step in successful],
+                tool_calls=len(successful) + len(failed_steps), tokens_est=tokens,
+                notes=[error[:200] for error in task.errors[:5]],
+            )
+            return report, task
+
+        execution = asyncio.create_task(_execute())
         try:
-            task = await asyncio.wait_for(scoped.run(worker_request), timeout)
+            report, task = await asyncio.wait_for(asyncio.shield(execution), timeout)
         except asyncio.TimeoutError:
+            # Runtime budget expired: cancel the specialist safely (shielded
+            # so wait_for cannot abandon an uncancelled OS-facing step) and
+            # record a FAILED stub — never a partial success claim.
+            execution.cancel()
+            try:
+                await execution
+            except (asyncio.CancelledError, Exception):
+                pass
             await store.audit("multi_agent.timeout", {"session_id": state.session_id, "agent": name})
             stub = Task(goal=instruction[:500])
             stub.status = TaskStatus.FAILED
@@ -416,27 +515,12 @@ class MultiAgentManager:
             report = WorkerReport(agent=name, status="timeout",
                                   summary=f"Worker '{name}' exceeded its {timeout:.0f}s runtime budget.")
             return report, stub
-        successful = [step for step in task.steps if step.result and step.result.success]
-        failed = [step for step in task.steps if step.status.value in {"failed", "cancelled"}
-                  or (step.result and not step.result.success)]
-        tokens = sum(estimate_tokens(json.dumps(step.result.model_dump(mode="json"), default=str))
-                     for step in successful) + estimate_tokens(task.answer or "")
+        tokens = report.tokens_est
+        status = report.status
         spent["tokens"] += tokens
-        spent["tool_calls"] += len(successful) + len(failed)
-        status: str = "success"
-        if task.status == TaskStatus.WAITING:
-            status = "blocked"
-        elif task.status == TaskStatus.CANCELLED:
-            status = "cancelled"
-        elif failed or task.status == TaskStatus.FAILED:
-            status = "failed"
-        report = WorkerReport(
-            agent=name, status=status,
-            summary=(task.answer or ";".join(task.errors) or f"worker {name} finished")[:4000],
-            evidence_step_ids=[step.id for step in successful],
-            tool_calls=len(successful) + len(failed), tokens_est=tokens,
-            notes=[error[:200] for error in task.errors[:5]],
-        )
+        spent["tool_calls"] += report.tool_calls
+        if status == "timeout":
+            await store.audit("multi_agent.timeout", {"session_id": state.session_id, "agent": name})
         return report, task
 
     # ---- reviewer (untrusted until validated) ----------------------------- #
@@ -472,10 +556,13 @@ class MultiAgentManager:
         return approved, notes
 
     # ---- top level --------------------------------------------------------- #
-    async def run(self, request: AgentRequest, *, depth: int = 0) -> ExecutionResponse:
+    async def run(self, request: AgentRequest, *, depth: int = 0,
+                  budgets: MultiAgentBudgets | None = None) -> ExecutionResponse:
         config = settings()
         store = self.core.memory
-        budgets = MultiAgentBudgets(config)
+        # Budgets default to fresh clamped settings; callers (tests, embedding
+        # apps) may pass an explicit budget set — never silently widened.
+        budgets = budgets or MultiAgentBudgets(config)
         if depth >= budgets.max_depth:
             await store.audit("multi_agent.blocked", {"reason": "depth_limit", "depth": depth})
             raise RuntimeError("maximum agent delegation depth reached")
@@ -532,7 +619,9 @@ class MultiAgentManager:
         index = 0
         pending_tasks: set[asyncio.Task] = set()
         while index < len(workers) or pending_tasks:
-            # budget checks BEFORE launching more work (fail closed)
+            # budget checks BEFORE launching more work (fail closed). Only
+            # *completed* workers count toward spend — an in-flight worker is
+            # never double-charged and its cost is recorded when it finishes.
             if time.monotonic() >= deadline:
                 budgets_hit.append("runtime")
                 break
@@ -560,24 +649,26 @@ class MultiAgentManager:
                 break
             while not queue.empty():
                 name, outcome = queue.get_nowait()
+                if isinstance(outcome, BaseException) and not isinstance(outcome, Exception):
+                    raise outcome  # cancellation must propagate, never be swallowed
                 if isinstance(outcome, Exception):
                     report = WorkerReport(agent=name, status="failed",
                                           summary=f"worker error: {type(outcome).__name__}")
-                    stub = Task(goal=_worker_instruction(request.message, name)[:500])
-                    stub.status = TaskStatus.FAILED
-                    stub.errors.append(str(outcome)[:500])
-                    reports.append(report)
-                    tasks_by_worker[name] = stub
-                    state.add_observation(name, report.summary)
+                    task = Task(goal=_worker_instruction(request.message, name)[:500])
+                    task.status = TaskStatus.FAILED
+                    task.errors.append(str(outcome)[:500])
+                    spent["tokens"] += report.tokens_est
+                    spent["tool_calls"] += report.tool_calls
                 else:
                     report, task = outcome
-                    reports.append(report)
-                    tasks_by_worker[name] = task
-                    state.add_observation(name, report.summary)
-                    await store.audit("multi_agent.worker_finished", {
-                        "session_id": session, "agent": name, "status": report.status,
-                        "tool_calls": report.tool_calls, "tokens_est": report.tokens_est,
-                        "evidence_steps": len(report.evidence_step_ids)})
+                    # Successful/normal paths are charged inside _run_worker.
+                reports.append(report)
+                tasks_by_worker[name] = task
+                state.add_observation(name, report.summary)
+                await store.audit("multi_agent.worker_finished", {
+                    "session_id": session, "agent": name, "status": report.status,
+                    "tool_calls": report.tool_calls, "tokens_est": report.tokens_est,
+                    "evidence_steps": len(report.evidence_step_ids)})
 
         for handle in pending_tasks:
             handle.cancel()
