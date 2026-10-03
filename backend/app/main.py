@@ -24,6 +24,8 @@ from app.network_security import NetworkPolicyError, SafeHttpClient
 from app.browser.api import build_browser_router
 from app.browser.policy import BrowserPolicyError
 from app.browser.runtime import BrowserRuntime, set_browser_runtime
+from app.voice.api import build_voice_router
+from app.voice.pipeline import VoiceError, VoicePipeline
 from app.memory import MemoryStore
 from app.memory_service import MemoryService
 from app.models import AgentRequest, AuditClearIn, AutomationActionIn, ChatRequest, DocumentIn, DocumentSearch, ExecutionResponse, FilesystemPathIn, GrantIn, MemoryIn, MemoryItem, MemoryPatch, PermissionActionIn, PresetIn, ResumeRequest, ScheduleCreate, SchedulePatch, StepStatus, Task, TaskStatus, TerminalExecuteIn, ToolDef, ToolPatchIn
@@ -48,6 +50,29 @@ set_browser_runtime(browser_runtime)
 async def _emergency_close_browser_sessions():
     """EMERGENCY STOP: close every browser context (cookies/storage dropped)."""
     return {"closed_sessions": await browser_runtime.close_all()}
+
+
+# --- Phase 11 voice pipeline (push-to-talk; OFF by default) ---------------- #
+async def _voice_agent_runner(request: AgentRequest):
+    """Execute a transcript through the SAME Orchestrator used for typed chat."""
+    gate = get_control_center()
+    if gate is not None and not gate.agent_active():
+        task = Task(goal=request.message)
+        task.status = TaskStatus.FAILED
+        task.errors.append("AGENT_DISABLED_BY_CONTROL_CENTER: the AI Agent master switch is OFF")
+        return execution_response(task, "LOCAL CORE", roles=["manager", "voice"], review_approved=False)
+    try:
+        return await asyncio.wait_for(Orchestrator(await agent()).run(request),
+                                      config.agent_timeout_seconds)
+    except asyncio.TimeoutError:
+        task = Task(goal=request.message)
+        task.status = TaskStatus.FAILED
+        task.errors.append("VOICE_TASK_TIMEOUT: the agent did not finish in time")
+        return execution_response(task, "LOCAL CORE", roles=["manager", "voice"], review_approved=False)
+
+
+voice_pipeline = VoicePipeline(config, runner=_voice_agent_runner, store=store,
+                              control_center=control_center)
 
 
 limiter = InMemoryRateLimiter({'default':config.rate_limit_default,'auth':config.rate_limit_auth,'chat':config.rate_limit_chat,'agent':config.rate_limit_agent,'tools':config.rate_limit_tools,'automation':config.rate_limit_automation},config.rate_limit_window_seconds,config.rate_limit_max_clients)
@@ -186,6 +211,7 @@ async def life(app):
     if automation:
         await automation.close()
     await browser_runtime.stop()
+    await voice_pipeline.stop()
     await close_llm()
 
 
@@ -217,6 +243,18 @@ async def browser_policy_handler(request: Request, error: BrowserPolicyError):
                                         "approval='APPROVE'." if approval else
                                         "Review browser/network policy settings.")}},
         "request_id": request_id_var.get()}, status_code=status)
+
+
+@app.exception_handler(VoiceError)
+async def voice_error_handler(request: Request, error: VoiceError):
+    approval = "APPROVAL" in error.code
+    return JSONResponse({"success": False, "error": {
+        "code": error.code,
+        "message": str(error)[:500],
+        "details": {"component": "voice",
+                    "recovery_action": ("Approve the pending task in the Control Center." if approval
+                                        else "Enable voice / configure a local STT/TTS provider.")}},
+        "request_id": request_id_var.get()}, status_code=409 if approval else 403)
 
 
 @app.exception_handler(RequestValidationError)
@@ -272,6 +310,7 @@ async def security_middleware(request: Request, call_next):
 
 
 app.include_router(build_browser_router(config.api_prefix + "/browser"))
+app.include_router(build_voice_router(voice_pipeline, config.api_prefix + "/voice"))
 
 
 @app.get(config.api_prefix + "/auth/status")

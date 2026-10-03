@@ -268,6 +268,31 @@ class Settings(BaseSettings):
     # NOT allow them: it blocks them outright (fail closed).
     browser_sensitive_actions_require_approval: bool = True
 
+    # --- Phase 11: voice (STT/TTS) ------------------------------------------- #
+    # OFF by default; push-to-talk is the only capture mode implemented, so
+    # there is no always-listening path even when voice is enabled. Remote
+    # voice providers are refused unless explicitly allowed (data egress).
+    voice_enabled: bool = False
+    voice_push_to_talk: bool = True
+    voice_speak_replies: bool = False
+    voice_stt_provider: Literal["auto", "whisper", "whisper.cpp", "local",
+                                "openai", "remote", "openai-compatible"] = "auto"
+    voice_tts_provider: Literal["auto", "piper", "local",
+                                "openai", "remote", "openai-compatible"] = "auto"
+    voice_stt_binary: str | None = None
+    voice_stt_model_path: str | None = None
+    voice_tts_binary: str | None = None
+    voice_tts_model_path: str | None = None
+    voice_timeout_seconds: float = Field(60, gt=0, le=300)
+    voice_max_audio_bytes: int = Field(8_000_000, ge=1_024, le=50_000_000)
+    voice_max_text_chars: int = Field(4_000, ge=1, le=50_000)
+    voice_allow_remote_providers: bool = False
+    voice_remote_stt_endpoint: str | None = None
+    voice_remote_tts_endpoint: str | None = None
+    voice_remote_model: str = "whisper-1"
+    voice_remote_tts_model: str = "tts-1"
+    voice_remote_api_key: str | None = Field(default=None, repr=False)
+
     # --- Phase 14: MCP & external integrations ------------------------------ #
     # Master kill switch for ALL external integrations (MCP servers and
     # provider connectors). OFF by default: with no configuration nothing in
@@ -429,6 +454,12 @@ class Settings(BaseSettings):
             self.block_cloud_metadata = False
         if self.require_approval_for_high_risk is False:
             raise ValueError("high-risk approval cannot be disabled")
+        # Voice: remote providers are opt-in and HTTPS-only; local providers
+        # never require network access.
+        if self.voice_allow_remote_providers:
+            for endpoint in (self.voice_remote_stt_endpoint, self.voice_remote_tts_endpoint):
+                if endpoint and not str(endpoint).startswith("https://"):
+                    raise ValueError("remote voice endpoints must use https")
         # Browser downloads/uploads are opt-in and must stay inside the
         # workspace jail; an enabled browser still cannot bypass the network
         # policy because every navigation re-validates the destination.
