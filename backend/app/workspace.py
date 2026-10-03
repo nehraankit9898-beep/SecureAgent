@@ -16,6 +16,8 @@ RESERVED = {
     *(f"LPT{i}" for i in range(1, 10)),
 }
 BAD_NAME = re.compile(r"[\x00-\x1f<>:\"|?*\\]")
+SECUREAGENT_BACKUP_DIR = ".secureagent-backups"
+SECUREAGENT_TRASH_DIR = ".secureagent-trash"
 MAX_PATH_CHARS = 4096
 MAX_PART_CHARS = 255
 SENSITIVE_PARTS={'.env','.ssh','id_rsa','id_ed25519','docker.sock','credentials','secrets'}
@@ -35,6 +37,7 @@ class WorkspacePolicy:
         max_search_file_bytes: int = 512_000,
         max_search_files: int = 2_000,
         max_depth: int = 8,
+        protected_paths: tuple[str, ...] | list[str] = (),
     ):
         expanded = root.expanduser()
         expanded.mkdir(parents=True, exist_ok=True)
@@ -46,6 +49,60 @@ class WorkspacePolicy:
         self.max_search_file_bytes = max_search_file_bytes
         self.max_search_files = max_search_files
         self.max_depth = max_depth
+        # Phase 7: policy-declared protected relative paths (files or whole
+        # subtrees). Reads stay allowed; every mutating operation fails closed
+        # unless the caller supplies the explicit override token.
+        self.protected_paths = frozenset(
+            PurePosixPath(part).as_posix().strip("/")
+            for part in protected_paths
+            if isinstance(part, str) and part.strip("/")
+        )
+
+    PROTECTED_TOKEN = "PROTECTED-OVERRIDE"
+
+    def is_protected(self, relative: str) -> bool:
+        """True when *relative* equals or lives under a protected path."""
+        try:
+            parts = self._parts(relative)
+        except (ValueError, PermissionError):
+            return False
+        candidate = PurePosixPath(*(part.casefold() for part in parts))
+        for entry in self.protected_paths:
+            normalized = PurePosixPath(*(segment.casefold() for segment in PurePosixPath(entry).parts))
+            if candidate == normalized or normalized in candidate.parents:
+                return True
+        return False
+
+    def _guard_mutation(self, relative: str, allow_protected: bool) -> None:
+        if allow_protected or not self.is_protected(relative):
+            return
+        # Bootstrap exception: creating a protected subtree for the first
+        # time is allowed only when no file exists yet anywhere inside it.
+        try:
+            parts = self._parts(relative)
+        except (ValueError, PermissionError):
+            parts = ()
+        if parts:
+            candidate = self.root.joinpath(*parts)
+            if candidate.is_dir() and not any(candidate.rglob("*")):
+                return
+            if not candidate.exists():
+                root_of_path = self.root.joinpath(parts[0])
+                if root_of_path.is_dir() and not any(root_of_path.rglob("*")):
+                    return
+        raise PermissionError(
+            "protected path requires explicit policy override"
+        )
+
+    def _ensure_parents(self, parts: tuple[str, ...]) -> None:
+        """Create missing parent directories, honoring protected-path guards."""
+        for index in range(1, len(parts)):
+            parent_relative = "/".join(parts[:index])
+            parent = self.root.joinpath(*parts[:index])
+            if parent.is_dir():
+                continue
+            self._guard_mutation(parent_relative, False)
+            parent.mkdir(mode=0o700, exist_ok=True)
 
     def _parts(self, relative: str) -> tuple[str, ...]:
         if not isinstance(relative, str) or not relative or len(relative) > MAX_PATH_CHARS:
@@ -78,6 +135,10 @@ class WorkspacePolicy:
         if posix.is_absolute() or windows.is_absolute() or windows.drive or windows.root:
             raise PermissionError("absolute paths are not allowed")
         parts = tuple(part for part in posix.parts if part not in ("", "."))
+        # Phase 7: internal backup/trash snapshots keep the original path's
+        # components (e.g. ".secureagent-trash/notes.txt/<snapshot>"), so the
+        # sensitive-name screen only applies once the control prefix is known.
+        control_prefix = parts and parts[0] in {self.BACKUP_DIRNAME, self.TRASH_DIRNAME}
         if not parts and relative != ".":
             raise ValueError("invalid path")
         if ".." in parts:
@@ -90,13 +151,15 @@ class WorkspacePolicy:
             stem = part.rstrip(". ").split(".")[0].upper()
             if BAD_NAME.search(part) or stem in RESERVED or part.endswith((" ", ".")):
                 raise ValueError("dangerous filename")
-            if part.casefold() in SENSITIVE_PARTS:
+            if part.casefold() in SENSITIVE_PARTS and not control_prefix:
                 raise PermissionError("sensitive workspace path is not accessible")
         return parts
 
     def resolve(self, relative: str, must_exist: bool = False) -> Path:
         parts = self._parts(relative)
         candidate = self.root.joinpath(*parts)
+        if parts and parts[0] in {SECUREAGENT_BACKUP_DIR, SECUREAGENT_TRASH_DIR}:
+            return candidate
         existing = candidate
         while not existing.exists() and existing != self.root:
             existing = existing.parent
@@ -203,7 +266,15 @@ class WorkspacePolicy:
         overwrite: bool = False,
         max_bytes: int | None = None,
         expected_sha256: str | None = None,
+        allow_protected: bool = False,
+        backup: bool = False,
     ) -> Path:
+        self._guard_mutation(relative, allow_protected)
+        if backup and overwrite:
+            try:
+                self.backup_file(relative)
+            except FileNotFoundError:
+                pass
         data = content.encode("utf-8") if isinstance(content, str) else content
         maximum = min(max_bytes or self.max_write_bytes, self.max_write_bytes)
         if len(data) > maximum:
@@ -214,6 +285,7 @@ class WorkspacePolicy:
         if not _SECURE_DIR_FD:
             return self._atomic_write_portable(relative, data, overwrite, maximum, expected_sha256)
 
+        self._ensure_parents(parts)
         parent_fd, name = self._open_parent_fd(parts, create=True)
         temporary = f".secureagent-{uuid4().hex}.tmp"
         temp_fd: int | None = None
@@ -297,6 +369,7 @@ class WorkspacePolicy:
                     raise ValueError("file changed; inspect it again")
         elif expected_sha256 is not None:
             raise FileNotFoundError("file not found")
+        self._ensure_parents(tuple(path.relative_to(self.root).parts))
         path.parent.mkdir(parents=True, exist_ok=True)
         self.resolve(str(path.parent.relative_to(self.root)), must_exist=True)
         descriptor, temporary = tempfile.mkstemp(prefix=".secureagent-", dir=path.parent)
@@ -344,6 +417,7 @@ class WorkspacePolicy:
             try: entries=list(os.scandir(directory))
             except OSError as e: raise PermissionError("workspace traversal failed") from e
             for entry in entries:
+                if entry.name in {SECUREAGENT_BACKUP_DIR, SECUREAGENT_TRASH_DIR} and directory == base.parent or entry.path == str(base / SECUREAGENT_BACKUP_DIR) or entry.path == str(base / SECUREAGENT_TRASH_DIR): continue
                 if entry.is_symlink(): continue
                 path=Path(entry.path); rel=path.relative_to(self.root)
                 if depth+1>self.max_depth: continue
@@ -402,9 +476,10 @@ class WorkspacePolicy:
             target.write_bytes(data)
         return files, total
 
-    def delete(self, relative: str, confirmation: str) -> None:
+    def delete(self, relative: str, confirmation: str, allow_protected: bool = False) -> None:
         if confirmation != "DELETE":
             raise PermissionError("explicit DELETE confirmation required")
+        self._guard_mutation(relative, allow_protected)
         parts = self._parts(relative)
         if not _SECURE_DIR_FD:
             path = self.resolve(relative, must_exist=True)
@@ -435,3 +510,266 @@ class WorkspacePolicy:
                 os.close(descriptor)
         finally:
             os.close(parent_fd)
+
+    # ------------------------------------------------------------------ #
+    # Phase 7 — extended filesystem primitives                            #
+    # All operations below use filesystem APIs only (no shell), enforce   #
+    # the normalized policy boundary, refuse symlink/hardlink escapes and  #
+    # respect protected paths unless an explicit override is supplied.     #
+    # ------------------------------------------------------------------ #
+
+    BACKUP_DIRNAME = SECUREAGENT_BACKUP_DIR
+    TRASH_DIRNAME = SECUREAGENT_TRASH_DIR
+    _SNAPSHOT_LIMIT = 20
+
+    def _open_regular_fd(self, parts: tuple[str, ...]) -> int:
+        """Open a regular, non-symlink, single-link file inside the jail."""
+        parent_fd, name = self._open_parent_fd(parts)
+        try:
+            try:
+                descriptor = os.open(name, _FILE_FLAGS, dir_fd=parent_fd)
+            except OSError as error:
+                if error.errno in {errno.ELOOP, errno.ENOTDIR, errno.EACCES, errno.EPERM}:
+                    raise PermissionError("unsafe workspace path") from None
+                if error.errno == errno.ENOENT:
+                    raise FileNotFoundError("workspace path not found") from None
+                raise
+            info = os.fstat(descriptor)
+            if not stat.S_ISREG(info.st_mode):
+                os.close(descriptor)
+                raise ValueError("not a regular file")
+            if info.st_nlink != 1:
+                os.close(descriptor)
+                raise PermissionError("hard-linked files are not allowed")
+            return descriptor
+        finally:
+            os.close(parent_fd)
+
+    def inspect(self, relative: str) -> dict:
+        parts = self._parts(relative)
+        if not parts:
+            return {"path": ".", "type": "directory", "protected": bool(self.protected_paths)}
+        target = self.root.joinpath(*parts)
+        if target.is_symlink():
+            raise PermissionError("symlinks and junction-like redirects are not allowed")
+        info = os.lstat(target)
+        if stat.S_ISLNK(info.st_mode):
+            raise PermissionError("symlinks and junction-like redirects are not allowed")
+        kind = "directory" if stat.S_ISDIR(info.st_mode) else "file" if stat.S_ISREG(info.st_mode) else "other"
+        if kind == "other":
+            raise ValueError("unsupported filesystem object")
+        result: dict = {
+            "path": self.relative(target),
+            "type": kind,
+            "size": info.st_size if kind == "file" else None,
+            "modified_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(info.st_mtime)),
+            "protected": self.is_protected(relative),
+        }
+        if kind == "file":
+            data, truncated = self.read_bytes(relative, 8192)
+            binary = b"\x00" in data
+            result["binary"] = binary
+            result["sha256"] = hashlib.sha256(data).hexdigest() if not truncated else None
+            result["encoding"] = None if binary else "utf-8"
+        return result
+
+    def create_directory(self, relative: str, allow_protected: bool = False) -> Path:
+        self._guard_mutation(relative, allow_protected)
+        parts = self._parts(relative)
+        if not parts:
+            raise ValueError("a directory path is required")
+        descriptor = os.open(self.root, _DIR_FLAGS)
+        try:
+            for part in parts:
+                try:
+                    os.mkdir(part, mode=0o700, dir_fd=descriptor)
+                except FileExistsError:
+                    pass
+                child = os.open(part, _DIR_FLAGS, dir_fd=descriptor)
+                os.close(descriptor)
+                descriptor = child
+        except OSError as error:
+            if error.errno in {errno.EEXIST, errno.ELOOP, errno.ENOTDIR, errno.EACCES, errno.EPERM}:
+                raise PermissionError("unsafe or existing workspace directory") from None
+            raise
+        finally:
+            os.close(descriptor)
+        return self.root.joinpath(*parts)
+
+    def _copy_regular(self, source_parts: tuple[str, ...], destination_parts: tuple[str, ...], max_bytes: int) -> int:
+        source_fd = self._open_regular_fd(source_parts)
+        try:
+            data = b""
+            while True:
+                block = os.read(source_fd, 65_536)
+                if not block:
+                    break
+                data += block
+                if len(data) > max_bytes:
+                    raise ValueError("copy exceeds configured byte limit")
+        finally:
+            os.close(source_fd)
+        self._ensure_parents(destination_parts)
+        parent_fd, name = self._open_parent_fd(destination_parts, create=True)
+        temporary = f".secureagent-{uuid4().hex}.tmp"
+        temp_fd: int | None = None
+        try:
+            flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
+            temp_fd = os.open(temporary, flags, 0o600, dir_fd=parent_fd)
+            with os.fdopen(temp_fd, "wb", closefd=True) as handle:
+                temp_fd = None
+                handle.write(data)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.link(temporary, name, src_dir_fd=parent_fd, dst_dir_fd=parent_fd, follow_symlinks=False)
+            os.unlink(temporary, dir_fd=parent_fd)
+            os.fsync(parent_fd)
+        except Exception:
+            if temp_fd is not None:
+                os.close(temp_fd)
+            try:
+                os.unlink(temporary, dir_fd=parent_fd)
+            except FileNotFoundError:
+                pass
+            raise
+        finally:
+            os.close(parent_fd)
+        return len(data)
+
+    def copy_file(self, source: str, destination: str, overwrite: bool = False, allow_protected: bool = False) -> str:
+        self._guard_mutation(source, True)  # reads from protected paths stay allowed
+        self._guard_mutation(destination, allow_protected)
+        source_parts = self._parts(source)
+        destination_parts = self._parts(destination)
+        if not source_parts or not destination_parts:
+            raise ValueError("source and destination file paths are required")
+        final_path = self.root.joinpath(*destination_parts)
+        if final_path.exists() and not overwrite:
+            raise ValueError("destination exists")
+        size = self._copy_regular(source_parts, destination_parts, self.max_write_bytes)
+        return self.relative(final_path)
+
+    def _move_within_jail(self, source_parts: tuple[str, ...], destination_parts: tuple[str, ...]) -> None:
+        self._ensure_parents(destination_parts)
+        source_parent, source_name = self._open_parent_fd(source_parts)
+        try:
+            if os.path.exists(destination_parts[-1], dir_fd=source_parent):
+                raise ValueError("destination exists")
+            os.rename(source_name, destination_parts[-1], src_dir_fd=source_parent, dst_dir_fd=source_parent)
+            os.fsync(source_parent)
+        finally:
+            os.close(source_parent)
+
+    def move_path(self, source: str, destination: str, allow_protected: bool = False) -> str:
+        self._guard_mutation(source, allow_protected)
+        self._guard_mutation(destination, allow_protected)
+        source_parts = self._parts(source)
+        destination_parts = self._parts(destination)
+        if not source_parts or not destination_parts:
+            raise ValueError("source and destination paths are required")
+        if self.root.joinpath(*destination_parts).exists():
+            raise ValueError("destination exists")
+        source_target = self.root.joinpath(*source_parts)
+        if source_target.is_symlink():
+            raise PermissionError("symlinks and junction-like redirects are not allowed")
+        if source_target.is_dir():
+            resolved_source = source_target.resolve(strict=True)
+            resolved_destination = self.root.joinpath(*destination_parts[:-1]).resolve(strict=True)
+            if resolved_destination == resolved_source or resolved_source in resolved_destination.parents:
+                raise ValueError("cannot move a directory into itself")
+            self._move_within_jail(source_parts, destination_parts)
+            return self.relative(self.root.joinpath(*destination_parts))
+        self._copy_regular(source_parts, destination_parts, self.max_write_bytes)
+        self.delete(self.relative(source_target), "DELETE", allow_protected=True)
+        return self.relative(self.root.joinpath(*destination_parts))
+
+    def rename_path(self, source: str, new_name: str, allow_protected: bool = False) -> str:
+        self._guard_mutation(source, allow_protected)
+        source_parts = self._parts(source)
+        if not source_parts:
+            raise ValueError("a file path is required")
+        if "/" in new_name or "\\" in new_name or not new_name:
+            raise ValueError("new name must be a single path component")
+        checked = self._parts(new_name)  # validates reserved names / traversal
+        destination_parts = source_parts[:-1] + checked
+        self._guard_mutation(self.relative(self.root.joinpath(*destination_parts)), allow_protected)
+        return self.move_path(source, self.relative(self.root.joinpath(*destination_parts)), allow_protected=True)
+
+    def backup_file(self, relative: str) -> str:
+        parts = self._parts(relative)
+        if not parts:
+            raise ValueError("a file path is required")
+        snapshot = f"{int(time.time())}-{uuid4().hex[:8]}"
+        backup_relative = "/".join([self.BACKUP_DIRNAME, *parts, snapshot])
+        self._copy_regular(parts, self._parts(backup_relative), self.max_read_bytes)
+        self._prune_snapshots(self.BACKUP_DIRNAME, [*parts])
+        return backup_relative
+
+    def recycle_file(self, relative: str, confirmation: str, allow_protected: bool = False) -> str:
+        if confirmation != "DELETE":
+            raise PermissionError("explicit DELETE confirmation required")
+        self._guard_mutation(relative, allow_protected)
+        parts = self._parts(relative)
+        if not parts:
+            raise ValueError("a file path is required")
+        descriptor = self._open_regular_fd(parts)
+        os.close(descriptor)
+        snapshot = f"{int(time.time())}-{uuid4().hex[:8]}"
+        trash_relative = "/".join([self.TRASH_DIRNAME, *parts, snapshot])
+        self._copy_regular(parts, self._parts(trash_relative), self.max_read_bytes)
+        self.delete(relative, "DELETE", allow_protected=True)
+        self._prune_snapshots(self.TRASH_DIRNAME, [*parts])
+        return trash_relative
+
+    def restore_recycled(self, trash_entry: str) -> str:
+        parts = list(self._parts(trash_entry))
+        if not parts or parts[0] != self.TRASH_DIRNAME or len(parts) < 3:
+            raise ValueError("invalid recycle entry")
+        parts.pop(0)
+        snapshot = parts.pop()
+        if not re.fullmatch(r"\d{9,11}-[0-9a-f]{8}", snapshot):
+            raise ValueError("invalid recycle entry")
+        original_relative = "/".join(parts)
+        if self.root.joinpath(*self._parts(original_relative)).exists():
+            raise ValueError("original path already exists")
+        self._copy_regular(self._parts(trash_entry), self._parts(original_relative), self.max_read_bytes)
+        return original_relative
+
+    def list_recycle_entries(self) -> list[dict]:
+        entries: list[dict] = []
+        base = self.root / self.TRASH_DIRNAME
+        if not base.is_dir():
+            return entries
+        for path in self.walk_bounded(self.TRASH_DIRNAME, self.max_search_files, stop_at_limit=True):
+            if path.is_dir() or path.is_symlink():
+                continue
+            rel = path.relative_to(base).as_posix()
+            info = path.stat()
+            entries.append({"entry": f"{self.TRASH_DIRNAME}/{rel}", "original": str(PurePosixPath(*PurePosixPath(rel).parts[:-1])), "size": info.st_size})
+        entries.sort(key=lambda item: item["entry"])
+        return entries
+
+    def purge_recycle_entry(self, trash_entry: str, confirmation: str) -> None:
+        if confirmation != "PURGE":
+            raise PermissionError("explicit PURGE confirmation required")
+        parts = self._parts(trash_entry)
+        if not parts or parts[0] != self.TRASH_DIRNAME:
+            raise ValueError("invalid recycle entry")
+        self.delete(trash_entry, "DELETE", allow_protected=True)
+
+    def _prune_snapshots(self, control_dir: str, parts: list[str]) -> None:
+        """Keep only the newest snapshots per original path (bounded storage)."""
+        prefix = "/".join([control_dir, *parts])
+        try:
+            directory = self.root.joinpath(control_dir, *parts)
+            if not directory.is_dir():
+                return
+            children = sorted((child.name for child in directory.iterdir()), reverse=True)
+        except OSError:
+            return
+        stale = children[self._SNAPSHOT_LIMIT:]
+        for name in stale:
+            try:
+                os.unlink(f"{prefix}/{name}")
+            except FileNotFoundError:
+                pass

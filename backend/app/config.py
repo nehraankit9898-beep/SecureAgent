@@ -88,6 +88,10 @@ class Settings(BaseSettings):
     max_search_results: int = Field(500, ge=1, le=5_000)
     max_search_output_bytes: int = Field(200_000, ge=1_000, le=5_000_000)
     max_directory_depth: int = Field(8, ge=1, le=32)
+    # Phase 7: workspace-relative paths that policy protects from every
+    # mutating filesystem tool unless the explicit PROTECTED-OVERRIDE token
+    # is supplied by an approved caller. Reads remain allowed.
+    workspace_protected_paths: list[str] = Field(default_factory=lambda: ["memory", "knowledge", ".secureagent-config"])
 
     max_document_bytes: int = Field(15_000_000, ge=1_000, le=100_000_000)
     max_chunks_per_document: int = Field(2_000, ge=1, le=20_000)

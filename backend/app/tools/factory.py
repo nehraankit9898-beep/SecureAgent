@@ -6,8 +6,9 @@ from app.sandbox import DockerPythonSandbox, DockerSandbox, SandboxPolicy
 from app.tools.base import Registry
 from app.permissions import PermissionManager
 from app.tools.builtins import (
-    Calculator, DateTimeTool, DeleteFile, HttpRequestTool, ListFiles, PythonTool, TerminalTool,
-    ReadFile, SearchTool, TextTool, WriteFile,
+    BackupFileTool, Calculator, CopyFile, CreateDirectory, DateTimeTool, DeleteFile,
+    HttpRequestTool, InspectFile, ListFiles, ListTrash, MovePath, PurgeTrash, PythonTool,
+    ReadFile, RecycleFile, RenamePath, RestoreRecycled, SearchTool, TerminalTool, TextTool, WriteFile,
 )
 from app.workspace import WorkspacePolicy
 
@@ -40,6 +41,11 @@ def _build_registry(config, root, store=None, executor=None):
     tools = [
         Calculator(), DateTimeTool(), TextTool(),
         ListFiles(root, limit), ReadFile(root, limit), WriteFile(root, limit), DeleteFile(root, limit),
+        # Phase 7 — secure filesystem agent operations.
+        InspectFile(root, limit), CreateDirectory(root, limit), CopyFile(root, limit),
+        MovePath(root, limit), RenamePath(root, limit), RecycleFile(root, limit),
+        RestoreRecycled(root, limit), ListTrash(root, limit), PurgeTrash(root, limit),
+        BackupFileTool(root, limit),
         PythonTool(root, python_sandbox, config.python_timeout_seconds, limit),
         SearchTool(config.searxng_base_url, config.enable_network_tools, config.network_mode, config.allow_local_network, config.allow_private_network, config.allow_external_network, config.dns_enabled, config.network_timeout_seconds, config.network_max_response_bytes, config.network_rate_limit_per_minute),
         HttpRequestTool(config.http_requests_enabled, config.network_mode, config.allow_local_network, config.allow_private_network, config.allow_external_network, config.dns_enabled, config.network_timeout_seconds, config.network_max_response_bytes, config.network_rate_limit_per_minute),
