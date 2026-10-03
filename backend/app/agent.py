@@ -44,6 +44,14 @@ class Agent:
                 step.status = StepStatus.CANCELLED
         return await self.finish(task)
 
+    def _granted_permissions(self, task) -> set:
+        """Session + persistent grants already approved for this conversation.
+        The Phase 6 loop consumes these; the Registry still enforces per-call.
+        """
+        from app.models import Permission as _Permission
+        return (self.session_approvals.get(task.conversation_id, set())
+                | self.persistent_permissions) - {_Permission.SAFE}
+
     async def plan(self, message, conversation, memories, model):
         config = settings()
         step_limit = min(self.max_steps if self.max_steps is not None else config.max_agent_steps, config.max_agent_steps)
@@ -185,6 +193,27 @@ Never claim or add permissions. The application policy decides authorization.'''
     async def execute(self, task, approved, model, approval_step_id=None):
         config = settings()
         gate = _control_gate()
+        # Phase 6 — Observe→Plan→Act→Verify→Recover loop. When enabled, the
+        # bounded loop owns execution; it reuses this Registry (schema +
+        # permission gates), the Control Center switches, the cancellation
+        # registry and the audit trail. On any internal loop error we fall
+        # back to the legacy executor below — never the other way around, so
+        # the loop can only add verification/recovery strictness.
+        if getattr(config, "computer_loop_enabled", False):
+            try:
+                from app.computer.loop import ComputerLoop
+                loop = ComputerLoop(llm=self.llm, registry=self.tools, memory=self.memory,
+                                    config=config, execution_registry=self.execution_registry)
+                return await loop.run(
+                    task.steps, goal=task.goal, conversation_id=task.conversation_id,
+                    approved_permissions=set(approved) | self._granted_permissions(task),
+                    resume_task=task if approval_step_id else None)
+            except Exception as error:
+                # Fail closed visibly: record the fallback in the audit trail.
+                await self.memory.audit("loop.fallback", {
+                    "task_id": task.id,
+                    "reason": f"{type(error).__name__}: legacy executor fallback",
+                })
         tool_limit = min(self.max_tool_calls if self.max_tool_calls is not None else config.max_tool_calls, config.max_tool_calls)
         retry_limit = min(self.max_retries if self.max_retries is not None else config.max_agent_retries, config.max_agent_retries)
         # Auto Retry gate: when OFF, retryable tool failures are never retried.
