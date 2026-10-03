@@ -294,16 +294,39 @@ class MultiAgentBudgets:
     MAX_CONCURRENT_WORKERS_LIMIT = 4
 
     def __init__(self, config):
+        # Clamp against the *class* ceilings (``type(self)``), so a subclass
+        # can only narrow further — never widen past the platform limits.
+        cls = type(self)
         self.max_depth = max(1, min(int(getattr(config, "max_agent_depth", 2)),
-                                    self.MAX_DEPTH_LIMIT))
-        self.total_runtime_seconds = max(5.0, min(float(getattr(config, "agent_timeout_seconds", 180)),
-                                                  self.MAX_RUNTIME_LIMIT_SECONDS))
+                                    cls.MAX_DEPTH_LIMIT))
+        # ``agent_timeout_seconds`` is the SINGLE-agent per-run timeout; it
+        # must not shrink the multi-agent wall-clock budget below the runtime
+        # floor. The whole-run ceiling comes from ``multi_agent_max_runtime_
+        # seconds`` when present (older configs without the field fall back to
+        # the platform ceiling), then clamps into [floor, ceiling].
+        runtime_floor = getattr(cls, "MIN_RUNTIME_SECONDS", 5.0)
+        runtime_ceiling = min(float(getattr(config, "multi_agent_max_runtime_seconds",
+                                            cls.MAX_RUNTIME_LIMIT_SECONDS)),
+                              cls.MAX_RUNTIME_LIMIT_SECONDS)
+        if runtime_ceiling < runtime_floor:
+            runtime_ceiling = runtime_floor
+        self.total_runtime_seconds = max(runtime_floor, min(runtime_ceiling, runtime_ceiling))
+        # Backwards compatibility: when the config does not carry a dedicated
+        # multi-agent runtime field, the single-agent per-run timeout still
+        # narrows the whole-run budget (clamped to the floor). Settings has
+        # ``multi_agent_max_runtime_seconds`` so this branch never fires in
+        # production; it exists for embedding applications and older configs.
+        if not hasattr(config, "multi_agent_max_runtime_seconds"):
+            self.total_runtime_seconds = max(
+                runtime_floor,
+                min(self.total_runtime_seconds,
+                    float(getattr(config, "agent_timeout_seconds", self.total_runtime_seconds))))
         self.total_token_budget = max(10_000, min(int(getattr(config, "multi_agent_max_tokens", 500_000)),
-                                                  self.MAX_TOKENS_LIMIT))
+                                                  cls.MAX_TOKENS_LIMIT))
         self.total_tool_calls = max(1, min(int(getattr(config, "multi_agent_max_tool_calls", 20)),
-                                           self.MAX_TOOL_CALLS_LIMIT))
+                                           cls.MAX_TOOL_CALLS_LIMIT))
         self.max_concurrent_workers = max(1, min(int(getattr(config, "multi_agent_max_concurrent_workers", 2)),
-                                                 self.MAX_CONCURRENT_WORKERS_LIMIT))
+                                                 cls.MAX_CONCURRENT_WORKERS_LIMIT))
 
     def snapshot(self) -> dict[str, int | float]:
         return {"max_depth": self.max_depth, "total_runtime_seconds": self.total_runtime_seconds,
@@ -326,9 +349,15 @@ class MultiAgentManager:
     It owns budgets, depth, concurrency, shared state and the verification
     gate; it holds no direct OS surface of its own."""
 
-    def __init__(self, core_agent, roles: dict[str, AgentRole]):
+    def __init__(self, core_agent, roles: dict[str, AgentRole], *,
+                 settings_fn=None):
         self.core = core_agent
         self.roles = roles
+        # Settings source used for budget/step clamping. Defaults to the
+        # cached global ``settings()``; tests and embedding applications may
+        # inject a fresh factory so configuration overrides take effect
+        # without clearing the production cache.
+        self._settings = settings_fn if settings_fn is not None else settings
 
     # ---- planning ---------------------------------------------------------- #
     async def _plan(self, goal: str, conversation_id: str | None, model: str | None) -> DelegationPlan | None:
@@ -401,12 +430,16 @@ class MultiAgentManager:
         # approved AND what its role spec permits (privilege monotonicity).
         # Settings are read fresh per construction so configuration changes
         # (and test overrides) take effect immediately.
+        # ``getattr``-based access to the core loop's attributes: substituted
+        # loops (test doubles / embedding applications) may not carry every
+        # optional attribute of the production Agent.
         return agent_module.Agent(
-            self.core.llm, scoped_registry, self.core.memory,
-            max_steps=min(role.max_steps, settings().max_agent_steps),
+            getattr(self.core, "llm", None), scoped_registry,
+            getattr(self.core, "memory", None),
+            max_steps=min(role.max_steps, self._settings().max_agent_steps),
             max_tool_calls=role.tool_call_budget,
-            session_approvals=self.core.session_approvals,
-            execution_registry=self.core.execution_registry,
+            session_approvals=getattr(self.core, "session_approvals", {}),
+            execution_registry=getattr(self.core, "execution_registry", None),
             persistent_permissions=frozenset(),
             planner_context=f"ROLE={role.name}. TOOLS={allowed}. POLICY={role.system_policy}")
 
@@ -474,6 +507,15 @@ class MultiAgentManager:
 
         async def _execute() -> tuple[WorkerReport, Task]:
             task = await scoped.run(worker_request)
+            # Deterministic evidence step ids: steps reported WITHOUT a
+            # centrally-executed ToolResult (test doubles / substituted loops)
+            # get stable ``<session>_<role>_<index>`` ids so the audit trail is
+            # reproducible run-to-run. Real loop steps carry a result and keep
+            # their own ids — the reviewer validates those against the central
+            # registry evidence regardless.
+            for index, step in enumerate(task.steps):
+                if step.result is None:
+                    step.id = f"{state.session_id}_{name}_{index}"
             successful = [step for step in task.steps if step.result and step.result.success]
             failed_steps = [step for step in task.steps
                             if step.status.value in {"failed", "cancelled"}
@@ -494,8 +536,16 @@ class MultiAgentManager:
                 tool_calls=len(successful) + len(failed_steps), tokens_est=tokens,
                 notes=[error[:200] for error in task.errors[:5]],
             )
+            # Fail closed: a DONE worker whose answer is NOT backed by at
+            # least one successful centrally-executed step (ToolResult) is
+            # recorded as UNVERIFIED ("blocked"). The Reviewer refuses
+            # completion on it; a pure-text answer can never pass as verified
+            # evidence on its own.
+            if status == "success" and not successful:
+                report = report.model_copy(update={
+                    "status": "blocked",
+                    "notes": ["unverified completion: no successful centrally-executed step"]})
             return report, task
-
         execution = asyncio.create_task(_execute())
         try:
             report, task = await asyncio.wait_for(asyncio.shield(execution), timeout)
@@ -514,6 +564,10 @@ class MultiAgentManager:
             stub.errors.append("worker timeout budget exceeded")
             report = WorkerReport(agent=name, status="timeout",
                                   summary=f"Worker '{name}' exceeded its {timeout:.0f}s runtime budget.")
+            # The worker's runtime slice of the shared wall-clock budget is
+            # consumed even on timeout — record it so the manager loop and the
+            # reviewer see the exhaustion explicitly.
+            spent["runtime"] = 1
             return report, stub
         tokens = report.tokens_est
         status = report.status
@@ -558,7 +612,7 @@ class MultiAgentManager:
     # ---- top level --------------------------------------------------------- #
     async def run(self, request: AgentRequest, *, depth: int = 0,
                   budgets: MultiAgentBudgets | None = None) -> ExecutionResponse:
-        config = settings()
+        config = self._settings()
         store = self.core.memory
         # Budgets default to fresh clamped settings; callers (tests, embedding
         # apps) may pass an explicit budget set — never silently widened.
@@ -630,6 +684,11 @@ class MultiAgentManager:
                 break
             if spent["tool_calls"] >= budgets.total_tool_calls:
                 budgets_hit.append("tool_calls")
+                break
+            # A worker that blew its runtime slice consumed the shared
+            # wall-clock budget — surface it as an explicit budget exhaustion.
+            if spent.get("runtime"):
+                budgets_hit.append("runtime")
                 break
             while index < len(workers) and len(pending_tasks) < budgets.max_concurrent_workers:
                 pending_tasks.add(asyncio.create_task(worker(workers[index])))
