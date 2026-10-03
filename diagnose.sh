@@ -43,8 +43,25 @@ if command -v node >/dev/null 2>&1; then check "Node.js" 1 "$(node --version)" "
 else check "Node.js" 0 "not installed" "Desktop app needs Node 20+; browser mode works without it"; fi
 check "Electron runtime" $([ -x "$ROOT/desktop/node_modules/.bin/electron" ] && echo 1 || echo 0) \
   "$([ -x "$ROOT/desktop/node_modules/.bin/electron" ] && echo installed || echo missing)" "Run ./install.sh --desktop"
-check "Dashboard build (backend/static)" $([ -f "$ROOT/backend/static/index.html" ] && echo 1 || echo 0) \
-  "$([ -f "$ROOT/backend/static/index.html" ] && echo present || echo missing)" "Run ./install.sh --rebuild-ui"
+# The dashboard bundle counts as built only when index.html exists AND the
+# assets it references are on disk (a half-synced bundle serves a blank page).
+if [ -f "$ROOT/backend/static/index.html" ]; then
+  dashboard_missing_ref=""
+  for ref in $(grep -oE '(src|href)="\./[^"]+"' "$ROOT/backend/static/index.html" | sed -E 's/.*"\.\/([^"]+)"/\1/'); do
+    [ -f "$ROOT/backend/static/$ref" ] || dashboard_missing_ref="$ref"
+  done
+  if [ -n "$dashboard_missing_ref" ]; then
+    dashboard_state="incomplete (missing $dashboard_missing_ref)"
+    dashboard_ok=0
+  else
+    dashboard_state="present"
+    dashboard_ok=1
+  fi
+else
+  dashboard_state="missing"
+  dashboard_ok=0
+fi
+check "Dashboard build (backend/static)" "$dashboard_ok" "$dashboard_state" "Run ./install.sh --rebuild-ui"
 
 # --- writable directories ----------------------------------------------------
 for dir in data logs workspace; do

@@ -1,12 +1,12 @@
 {
-  "generated_at": "2026-10-03T12:21:40.783806+00:00",
+  "generated_at": "2026-10-03T12:35:21.450721+00:00",
   "results": [
     {
       "test": "Backend startup",
       "status": "PASS",
       "evidence": {
-        "pid": 6421,
-        "port": 55387
+        "pid": 9144,
+        "port": 58235
       }
     },
     {
@@ -113,14 +113,14 @@
         "status": "completed",
         "answer": "4",
         "task": {
-          "id": "44f0f226-116b-48b3-82c1-510485429395",
-          "conversation_id": "4eacb6cc-3d2f-44ac-9727-2d45ab410803",
+          "id": "11a2aafd-c673-4f7c-9ad4-283d5789370c",
+          "conversation_id": "4f01eef8-1da2-4fd5-812d-227ce6fc3d38",
           "goal": "calculate 2+2",
           "intent": "calculation",
           "status": "completed",
           "steps": [
             {
-              "id": "627efe47-4222-4907-b379-3f35b8cf9904",
+              "id": "3f09be32-fa25-4c70-a421-51ace4229058",
               "title": "Calculate expression",
               "tool": "calculator",
               "arguments": {
@@ -143,8 +143,8 @@
           "current_step": 1,
           "errors": [],
           "answer": "4",
-          "created_at": "2026-10-03T12:21:35.491839Z",
-          "updated_at": "2026-10-03T12:21:35.517157Z"
+          "created_at": "2026-10-03T12:35:16.223181Z",
+          "updated_at": "2026-10-03T12:35:16.252350Z"
         },
         "provider": "LOCAL CORE",
         "roles": [],
@@ -162,14 +162,14 @@
       "test": "Agent",
       "status": "PASS",
       "evidence": {
-        "id": "56eac130-34ca-49a9-983a-ebf3eff08bef",
-        "conversation_id": "de901dde-6ab5-4348-b86a-cddf015d46b1",
+        "id": "6e279810-ba00-4991-8ebb-8009921fab43",
+        "conversation_id": "42ba4f4f-bf01-4aa7-9b29-daeead558540",
         "goal": "calculate 6*7",
         "intent": "calculation",
         "status": "completed",
         "steps": [
           {
-            "id": "6c8d9c53-677b-46fa-899a-9d61f767310d",
+            "id": "e1e6ea5a-10a4-4aa1-9e42-538309ecabd7",
             "title": "Calculate expression",
             "tool": "calculator",
             "arguments": {
@@ -192,22 +192,22 @@
         "current_step": 1,
         "errors": [],
         "answer": "42",
-        "created_at": "2026-10-03T12:21:35.521639Z",
-        "updated_at": "2026-10-03T12:21:35.546737Z"
+        "created_at": "2026-10-03T12:35:16.257356Z",
+        "updated_at": "2026-10-03T12:35:16.284283Z"
       }
     },
     {
       "test": "Permissions",
       "status": "PASS",
       "evidence": {
-        "id": "63ff6c4c-5727-4856-a2ca-4e95d09981b2",
-        "conversation_id": "60658719-6963-4418-b7b6-2ba18e465fc6",
+        "id": "c48ae921-985d-4feb-9daf-904cf3af242c",
+        "conversation_id": "386f1d46-520d-4edf-ae22-1b8bec7deb91",
         "goal": "list files in the workspace",
         "intent": "files",
         "status": "waiting_confirmation",
         "steps": [
           {
-            "id": "13c09878-85f2-4899-ba4e-8685c76135fe",
+            "id": "1dc2eb2e-4920-44ef-9ab6-9e7caf83a9da",
             "title": "List workspace files",
             "tool": "list_files",
             "arguments": {
@@ -230,22 +230,22 @@
         "current_step": 0,
         "errors": [],
         "answer": null,
-        "created_at": "2026-10-03T12:21:35.551483Z",
-        "updated_at": "2026-10-03T12:21:35.598469Z"
+        "created_at": "2026-10-03T12:35:16.288232Z",
+        "updated_at": "2026-10-03T12:35:16.317478Z"
       }
     },
     {
       "test": "Approval",
       "status": "PASS",
       "evidence": {
-        "id": "63ff6c4c-5727-4856-a2ca-4e95d09981b2",
-        "conversation_id": "60658719-6963-4418-b7b6-2ba18e465fc6",
+        "id": "c48ae921-985d-4feb-9daf-904cf3af242c",
+        "conversation_id": "386f1d46-520d-4edf-ae22-1b8bec7deb91",
         "goal": "list files in the workspace",
         "intent": "files",
         "status": "completed",
         "steps": [
           {
-            "id": "13c09878-85f2-4899-ba4e-8685c76135fe",
+            "id": "1dc2eb2e-4920-44ef-9ab6-9e7caf83a9da",
             "title": "List workspace files",
             "tool": "list_files",
             "arguments": {
@@ -277,8 +277,8 @@
         "current_step": 1,
         "errors": [],
         "answer": "Verified local tool results: [{\"step\": \"List workspace files\", \"tool\": \"list_files\", \"output\": {\"entries\": [{\"path\": \"sample.txt\", \"type\": \"file\", \"size\": 29}], \"truncated\": false}}]",
-        "created_at": "2026-10-03T12:21:35.551483Z",
-        "updated_at": "2026-10-03T12:21:35.607052Z"
+        "created_at": "2026-10-03T12:35:16.288232Z",
+        "updated_at": "2026-10-03T12:35:16.324871Z"
       }
     },
     {
@@ -290,11 +290,11 @@
       "test": "Memory create",
       "status": "PASS",
       "evidence": {
-        "id": "42694c26-1d00-4710-96f3-e405163254c9",
-        "content": "persist-1791030095610421931",
+        "id": "2e06f9dd-fb1a-4e1b-90c6-82342221a47a",
+        "content": "persist-1791030916327582918",
         "category": "runtime",
-        "created_at": "2026-10-03T12:21:35.611629Z",
-        "updated_at": "2026-10-03T12:21:35.611629Z"
+        "created_at": "2026-10-03T12:35:16.328689Z",
+        "updated_at": "2026-10-03T12:35:16.328689Z"
       }
     },
     {
@@ -327,17 +327,17 @@
       "evidence": {
         "approval": {
           "ok": true,
-          "schedule_id": "d11eb0a6-3508-42b9-887c-8d41f1086083",
+          "schedule_id": "e57a6be5-1820-4ef7-94ce-50972ee8f478",
           "status": "approved"
         },
         "run": {
-          "id": "94239896-ddf0-49d9-9151-0b60b648b056",
-          "schedule_id": "d11eb0a6-3508-42b9-887c-8d41f1086083",
+          "id": "8b4d012b-59ef-4a4e-ab77-8d9aa8a3b365",
+          "schedule_id": "e57a6be5-1820-4ef7-94ce-50972ee8f478",
           "status": "completed",
-          "task_id": "bf31479e-674b-4a74-a8ce-9520a3c95c65",
+          "task_id": "f3f69900-ad12-4b92-8c82-0b4921db3387",
           "answer": "81",
           "errors": [],
-          "created_at": "2026-10-03T12:21:39.311461+00:00"
+          "created_at": "2026-10-03T12:35:20.064495+00:00"
         }
       }
     },
@@ -556,11 +556,11 @@
       "status": "PASS",
       "evidence": [
         {
-          "id": "42694c26-1d00-4710-96f3-e405163254c9",
-          "content": "persist-1791030095610421931",
+          "id": "2e06f9dd-fb1a-4e1b-90c6-82342221a47a",
+          "content": "persist-1791030916327582918",
           "category": "runtime",
-          "created_at": "2026-10-03T12:21:35.611629Z",
-          "updated_at": "2026-10-03T12:21:35.611629Z"
+          "created_at": "2026-10-03T12:35:16.328689Z",
+          "updated_at": "2026-10-03T12:35:16.328689Z"
         }
       ]
     },

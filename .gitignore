@@ -7,3 +7,4 @@ __pycache__/
 # Local Python virtualenv / generated runtime state
 .venv/
 .live-verify/
+diagnostic-report.txt

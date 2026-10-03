@@ -369,13 +369,24 @@ class Settings(BaseSettings):
     def clamp_tokens(cls, value):
         return _clamped_number("multi_agent_max_tokens", value, 10_000, 10_000_000, integer=True)
 
-    @field_validator("agent_timeout_seconds", "multi_agent_max_runtime_seconds", mode="before")
+    # NOTE: two separate validators (instead of one shared validator that
+    # reads ``info.field_name``) on purpose. ``pydantic-settings`` validates
+    # field *defaults* through ``ValidationInfo`` objects whose
+    # ``field_name`` is ``None`` (observed with the pinned
+    # pydantic 2.12.0 / pydantic-settings 2.10.0 pair), so a shared
+    # validator keyed on ``info.field_name`` raises ``KeyError: None``
+    # before the application can even start. Keeping the field name literal
+    # makes the clamp independent of that upstream detail.
+
+    @field_validator("agent_timeout_seconds", mode="before")
     @classmethod
-    def clamp_agent_timeouts(cls, value, info):
-        bounds = {"agent_timeout_seconds": (2.0, 900.0),
-                  "multi_agent_max_runtime_seconds": (5.0, 900.0)}
-        low, high = bounds[info.field_name]
-        return _clamped_number(info.field_name, value, low, high)
+    def clamp_agent_timeout(cls, value):
+        return _clamped_number("agent_timeout_seconds", value, 2.0, 900.0)
+
+    @field_validator("multi_agent_max_runtime_seconds", mode="before")
+    @classmethod
+    def clamp_multi_agent_runtime(cls, value):
+        return _clamped_number("multi_agent_max_runtime_seconds", value, 5.0, 900.0)
 
     @field_validator('ollama_model','embedding_model')
     @classmethod

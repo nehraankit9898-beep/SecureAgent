@@ -3,7 +3,8 @@
 #
 # Produces:
 #   build/backend-build/SecureAgentBackend            (PyInstaller frozen backend)
-#   build/electron-build/SecureAgent-1.3.4-amd64.AppImage / .deb / .tar.gz
+#   build/electron-build/SecureAgent-<version>-amd64.AppImage / .deb / .tar.gz
+#     (<version> comes from desktop/package.json via electron-builder)
 #
 # Prerequisites: ./install.sh --desktop has completed successfully.
 set -euo pipefail

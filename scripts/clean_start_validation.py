@@ -73,7 +73,7 @@ def main() -> int:
 
     # Start the backend.
     proc = subprocess.Popen(
-        ["python3", "-m", "uvicorn", "app.main:app", "--host", "127.0.0.1", "--port", "18799"],
+        [sys.executable, "-m", "uvicorn", "app.main:app", "--host", "127.0.0.1", "--port", "18799"],
         cwd=str(Path(__file__).resolve().parent.parent / "backend"),
         env=ENV,
         stdout=subprocess.PIPE,

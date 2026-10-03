@@ -1,4 +1,4 @@
-# SecureAgent 1.3.4 — Linux Installation (Debian / Kali / Ubuntu)
+# SecureAgent 2.0.0 — Linux Installation (Debian / Kali / Ubuntu)
 
 SecureAgent now runs natively on Debian, Kali Rolling, Ubuntu, and derivatives
 in two modes:
@@ -104,7 +104,7 @@ To produce an AppImage / `.deb` / `.tar.gz` installer with a frozen backend:
 ```bash
 ./install.sh --desktop     # once
 ./build-linux.sh
-# → build/electron-build/SecureAgent-1.3.4-amd64.AppImage (+ .deb, .tar.gz)
+# → build/electron-build/SecureAgent-2.0.0-amd64.AppImage (+ .deb, .tar.gz)
 ```
 
 ## Security notes

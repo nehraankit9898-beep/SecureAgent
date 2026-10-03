@@ -67,6 +67,29 @@ jobs:
       - name: Desktop lifecycle and security tests
         run: node --test desktop/tests/*.test.js
 
+  frozen-backend:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+          cache: pip
+          cache-dependency-path: backend/requirements*.lock
+      - name: Install locked dependencies + PyInstaller
+        run: |
+          python -m pip install -r backend/requirements.lock
+          python -m pip install "pyinstaller>=6.10,<7"
+      - name: Build the frozen backend (PyInstaller spec)
+        run: |
+          python -m PyInstaller --noconfirm --clean \
+            --distpath build/backend-build \
+            --workpath build/pyinstaller-work \
+            backend/SecureAgentBackend.spec
+      - name: Smoke-test the frozen binary (real loopback launch)
+        run: python backend/scripts/binary_smoke.py build/backend-build/SecureAgentBackend
+
   container:
     runs-on: ubuntu-24.04
     timeout-minutes: 30

@@ -14,9 +14,22 @@ import tempfile
 import time
 import urllib.error
 import urllib.request
+import re
+from pathlib import Path
 
 BINARY = sys.argv[1] if len(sys.argv) > 1 else "build/backend-build/SecureAgentBackend"
-VERSION = "1.3.4"
+
+# The expected version is read from the single authoritative source — the
+# FastAPI app declaration in backend/app/main.py, the same source
+# backend/tests/test_engineering_fixes.py pins the frontend/desktop
+# package.json files to. Hardcoding a copy here is what made this smoke test
+# fail against a correctly built binary after the 2.0.0 version bump.
+_MAIN = Path(__file__).resolve().parents[1] / "app" / "main.py"
+_match = re.search(r'app = FastAPI\(title=config\.app_name, version="([^"]+)"',
+                   _MAIN.read_text(encoding="utf-8"))
+if not _match:
+    raise SystemExit("could not determine the application version from backend/app/main.py")
+VERSION = _match.group(1)
 
 
 def free_port() -> int:
