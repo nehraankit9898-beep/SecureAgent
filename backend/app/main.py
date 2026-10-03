@@ -1732,8 +1732,17 @@ async def filesystem_overview():
         "workspace": str(config.workspace_root),
         "allowed_paths": [str(path) for path in roots],
         "control_center_paths": state.filesystem.allowed_paths,
-        "read_permissions": {"workspace": True, "approved_paths": True, "system_paths": False},
-        "write_permissions": {"workspace": True, "approved_paths": state.terminal.enabled, "system_paths": False},
+        "read_permissions": {"workspace": True, "approved_paths_via_terminal_jail": True,
+                             "system_paths": False},
+        "write_permissions": {"workspace": True,
+                              "approved_paths_via_terminal_jail": state.terminal.enabled,
+                              "system_paths": False},
+        # Honest scope: ordinary filesystem TOOLS stay confined to the
+        # workspace; Control Center approved paths extend the TERMINAL jail
+        # (LinuxTerminalExecutor.allowed_roots) at runtime.
+        "approved_paths_scope": {"filesystem_tools": "workspace only",
+                                 "terminal_jail": "workspace + Control Center approved paths",
+                                 "enforced_by": "LinuxTerminalExecutor.allowed_roots"},
         "protected_paths": state.filesystem.protected_paths,
         "terminal_tools_enabled": config.filesystem_tools_enabled,
     }
