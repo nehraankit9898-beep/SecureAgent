@@ -186,8 +186,10 @@ class ReplaceInFile(FileBase):
         after = before.replace(args["old_text"], args["new_text"], 1)
         if len(after.encode("utf-8")) > config.max_edit_file_bytes:
             raise ValueError("edited file exceeds configured byte limit")
-        backup = args["path"] + ".agent-backup"
-        self.policy.atomic_write(backup, before, overwrite=True, max_bytes=config.max_backup_bytes)
+        # Phase 7: protected paths cannot be edited without the explicit override token.
+        if self.policy.is_protected(args["path"]) and args.get("policy_override") != "PROTECTED-OVERRIDE":
+            raise PermissionError("protected path requires explicit policy override")
+        backup = self.policy.backup_file(args["path"])
         try:
             self.policy.atomic_write(
                 args["path"], after, overwrite=True,

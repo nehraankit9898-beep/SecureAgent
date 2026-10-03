@@ -3,9 +3,9 @@ from datetime import UTC,datetime
 from pathlib import Path
 from typing import Any,Literal
 from zoneinfo import ZoneInfo,ZoneInfoNotFoundError
-from pydantic import BaseModel,Field
+from pydantic import BaseModel,ConfigDict,Field
 from app.config import settings
-from app.models import Permission, RiskLevel
+from app.models import Permission, Reversibility, RiskLevel
 from app.tools.base import Tool
 from app.workspace import WorkspacePolicy
 class CalcIn(BaseModel):expression:str=Field(min_length=1,max_length=500)
@@ -41,10 +41,16 @@ class TextTool(Tool):
  name='text_processing';description='Count or normalize text';category='utility';risk_level=RiskLevel.LOW;input_model=TextIn;output_model=TextOut
  async def run(self,a):return {'result':len(re.findall(r'\b\w+\b',a['text'])) if a['operation']=='word_count' else len(a['text']) if a['operation']=='character_count' else ' '.join(a['text'].split())}
 class FileBase(Tool):
+ # Phase 7: workspace-relative names that policy protects from mutation
+ # unless the caller supplies the explicit PROTECTED-OVERRIDE token.
+ WORKSPACE_PROTECTED_RELPATHS = ("memory", "knowledge", ".secureagent-config")
  def __init__(self,root:Path,limit=20000):
   from app.config import settings
-  c=settings();self.policy=WorkspacePolicy(root,c.max_read_bytes,c.max_write_bytes,c.max_search_file_bytes,c.max_search_files,c.max_directory_depth);self.root=self.policy.root;self.limit=limit
+  c=settings()
+  protected=list(getattr(c,"workspace_protected_paths",()) or ())
+  self.policy=WorkspacePolicy(root,c.max_read_bytes,c.max_write_bytes,c.max_search_file_bytes,c.max_search_files,c.max_directory_depth,protected);self.root=self.policy.root;self.limit=limit
  def path(self,p):return self.policy.resolve(p)
+ def override(self,a):return a.get('policy_override')==WorkspacePolicy.PROTECTED_TOKEN
 class ListIn(BaseModel):path:str='.';recursive:bool=False;limit:int=Field(200,ge=1,le=1000)
 class ListOut(BaseModel):entries:list[dict[str,Any]];truncated:bool
 class ListFiles(FileBase):
@@ -61,23 +67,33 @@ class ListFiles(FileBase):
    out.append({'path':r.as_posix(),'type':'directory' if x.is_dir() else 'file','size':None if x.is_dir() else x.stat().st_size})
   return {'entries':out,'truncated':False}
 class ReadIn(BaseModel):path:str
-class ReadOut(BaseModel):content:str;truncated:bool;sha256:str
+class ReadOut(BaseModel):content:str;truncated:bool;sha256:str;binary:bool=Field(default=False);encoding:str='utf-8';size:int=0;protected:bool=False
 class ReadFile(FileBase):
  name='read_file';description='Stream bounded UTF-8 workspace text';category='filesystem';risk_level=RiskLevel.LOW;input_model=ReadIn;output_model=ReadOut;permissions=frozenset({Permission.READ})
  async def run(self,a):
   import hashlib
-  content,truncated,data=self.policy.read_text(a['path']);return {'content':content[:self.limit],'truncated':truncated or len(content)>self.limit,'sha256':hashlib.sha256(data).hexdigest()}
-class WriteIn(BaseModel):path:str;content:str;overwrite:bool=False
-class WriteOut(BaseModel):path:str;bytes_written:int
+  content,truncated,data=self.policy.read_text(a['path'])
+  binary=b'\x00' in data[:8192]
+  return {'content':'' if binary else content[:self.limit],'truncated':(not binary and (truncated or len(content)>self.limit)),'sha256':hashlib.sha256(data).hexdigest(),'binary':binary,'encoding':'binary' if binary else 'utf-8','size':len(data),'protected':self.policy.is_protected(a['path'])}
+class WriteIn(BaseModel):path:str;content:str;overwrite:bool=False;create_parents:bool=True;policy_override:Literal['PROTECTED-OVERRIDE']|None=None
+class WriteOut(BaseModel):path:str;bytes_written:int;backup_path:str|None=None
 class WriteFile(FileBase):
- name='write_file';description='Atomically write bounded workspace text';category='filesystem';risk_level=RiskLevel.HIGH;idempotent=False;input_model=WriteIn;output_model=WriteOut;permissions=frozenset({Permission.WRITE})
+ name='write_file';description='Atomically write bounded workspace text with optional pre-overwrite backup';category='filesystem';risk_level=RiskLevel.HIGH;idempotent=False;reversibility=Reversibility.REVERSIBLE;input_model=WriteIn;output_model=WriteOut;permissions=frozenset({Permission.WRITE})
  async def run(self,a):
-  p=self.policy.atomic_write(a['path'],a['content'],a['overwrite']);return {'path':p.relative_to(self.root).as_posix(),'bytes_written':len(a['content'].encode())}
-class DeleteIn(BaseModel):path:str;confirmation:Literal['DELETE']
-class DeleteOut(BaseModel):path:str;deleted:bool
+  backup=None
+  if a['overwrite']:
+   try:backup=self.policy.backup_file(a['path'])
+   except FileNotFoundError:backup=None
+   except PermissionError:raise
+  p=self.policy.atomic_write(a['path'],a['content'],a['overwrite'],allow_protected=self.override(a),backup=False);return {'path':p.relative_to(self.root).as_posix(),'bytes_written':len(a['content'].encode()),'backup_path':backup}
+class DeleteIn(BaseModel):path:str;confirmation:Literal['DELETE'];permanent:bool=False;policy_override:Literal['PROTECTED-OVERRIDE']|None=None
+class DeleteOut(BaseModel):path:str;deleted:bool;recycle_entry:str|None=None;reversible:bool
 class DeleteFile(FileBase):
- name='delete_file';description='Delete one regular file with explicit confirmation';category='filesystem';risk_level=RiskLevel.HIGH;idempotent=False;input_model=DeleteIn;output_model=DeleteOut;permissions=frozenset({Permission.WRITE})
- async def run(self,a):self.policy.delete(a['path'],a['confirmation']);return {'path':a['path'],'deleted':True}
+ name='delete_file';description='Safely delete one regular file (recycles to the internal trash unless permanent=true) with explicit confirmation';category='filesystem';risk_level=RiskLevel.HIGH;idempotent=False;reversibility=Reversibility.REVERSIBLE;input_model=DeleteIn;output_model=DeleteOut;permissions=frozenset({Permission.WRITE})
+ async def run(self,a):
+  if a['permanent']:
+   self.policy.delete(a['path'],a['confirmation'],allow_protected=self.override(a));return {'path':a['path'],'deleted':True,'recycle_entry':None,'reversible':False}
+  entry=self.policy.recycle_file(a['path'],a['confirmation'],allow_protected=self.override(a));return {'path':a['path'],'deleted':True,'recycle_entry':entry,'reversible':True}
 class PyIn(BaseModel):code:str=Field(min_length=1,max_length=10000)
 class PyOut(BaseModel):stdout:str;stderr:str;exit_code:int;truncated:bool
 class PythonTool(FileBase):
@@ -140,3 +156,72 @@ class TerminalTool(FileBase):
   # the terminal and the test runner share one authoritative configuration.
   result=await self.sandbox.execute_copy(self.policy,a['path'],a['command'],copy_config.test_max_copy_files,copy_config.test_max_copy_bytes)
   return {'command':a['command'],**result}
+
+# --------------------------------------------------------------------------- #
+# Phase 7 — extended filesystem agent tools. Every operation goes through     #
+# WorkspacePolicy (normalized paths, allowed root, symlink/hardlink guards,   #
+# protected paths, size budgets) and uses filesystem APIs only — never shell. #
+# --------------------------------------------------------------------------- #
+class _FsBase(FileBase):
+ category='filesystem';timeout_seconds=20
+ def override(self,a):return a.get('policy_override')==WorkspacePolicy.PROTECTED_TOKEN
+
+class InspectIn(BaseModel):path:str
+class InspectOut(BaseModel):info:dict[str,Any]
+class InspectFile(_FsBase):
+ name='inspect_file';description='Inspect one workspace file or directory (type, size, hash, binary flag, protected flag)';risk_level=RiskLevel.LOW;reversibility=Reversibility.READ_ONLY;input_model=InspectIn;output_model=InspectOut;permissions=frozenset({Permission.READ})
+ async def run(self,a):return {'info':self.policy.inspect(a['path'])}
+
+class CreateDirIn(BaseModel):path:str;policy_override:Literal['PROTECTED-OVERRIDE']|None=None
+class CreateDirOut(BaseModel):path:str;created:bool
+class CreateDirectory(_FsBase):
+ name='create_directory';description='Create a workspace directory inside the policy root';risk_level=RiskLevel.MEDIUM;reversibility=Reversibility.PARTIAL;input_model=CreateDirIn;output_model=CreateDirOut;permissions=frozenset({Permission.WRITE})
+ async def run(self,a):p=self.policy.create_directory(a['path'],allow_protected=self.override(a));return {'path':p.relative_to(self.root).as_posix(),'created':True}
+
+class CopyIn(BaseModel):source:str;destination:str;overwrite:bool=False;policy_override:Literal['PROTECTED-OVERRIDE']|None=None
+class CopyOut(BaseModel):source:str;destination:str;copied:bool
+class CopyFile(_FsBase):
+ name='copy_file';description='Copy one regular workspace file atomically within the policy root';risk_level=RiskLevel.MEDIUM;reversibility=Reversibility.REVERSIBLE;idempotent=False;input_model=CopyIn;output_model=CopyOut;permissions=frozenset({Permission.READ,Permission.WRITE})
+ async def run(self,a):d=self.policy.copy_file(a['source'],a['destination'],a['overwrite'],allow_protected=self.override(a));return {'source':a['source'],'destination':d,'copied':True}
+
+class MoveIn(BaseModel):source:str;destination:str;policy_override:Literal['PROTECTED-OVERRIDE']|None=None
+class MoveOut(BaseModel):source:str;destination:str;moved:bool
+class MovePath(_FsBase):
+ name='move_path';description='Move a workspace file or directory inside the policy root';risk_level=RiskLevel.HIGH;reversibility=Reversibility.PARTIAL;idempotent=False;input_model=MoveIn;output_model=MoveOut;permissions=frozenset({Permission.WRITE})
+ async def run(self,a):d=self.policy.move_path(a['source'],a['destination'],allow_protected=self.override(a));return {'source':a['source'],'destination':d,'moved':True}
+
+class RenameIn(BaseModel):path:str;new_name:str;policy_override:Literal['PROTECTED-OVERRIDE']|None=None
+class RenameOut(BaseModel):old_path:str;new_path:str;renamed:bool
+class RenamePath(_FsBase):
+ name='rename_path';description='Rename a workspace path within its directory';risk_level=RiskLevel.HIGH;reversibility=Reversibility.REVERSIBLE;idempotent=False;input_model=RenameIn;output_model=RenameOut;permissions=frozenset({Permission.WRITE})
+ async def run(self,a):n=self.policy.rename_path(a['path'],a['new_name'],allow_protected=self.override(a));return {'old_path':a['path'],'new_path':n,'renamed':True}
+
+class RecycleIn(BaseModel):path:str;confirmation:Literal['DELETE'];policy_override:Literal['PROTECTED-OVERRIDE']|None=None
+class RecycleOut(BaseModel):path:str;recycle_entry:str;reversible:bool=True
+class RecycleFile(_FsBase):
+ name='recycle_file';description='Move one regular file to the internal recoverable trash with explicit confirmation';risk_level=RiskLevel.HIGH;reversibility=Reversibility.REVERSIBLE;idempotent=False;input_model=RecycleIn;output_model=RecycleOut;permissions=frozenset({Permission.WRITE})
+ async def run(self,a):entry=self.policy.recycle_file(a['path'],a['confirmation'],allow_protected=self.override(a));return {'path':a['path'],'recycle_entry':entry,'reversible':True}
+
+class RestoreIn(BaseModel):entry:str
+class RestoreOut(BaseModel):path:str;restored:bool
+class RestoreRecycled(_FsBase):
+ name='restore_recycled_file';description='Restore a recycled file from the internal trash';risk_level=RiskLevel.MEDIUM;reversibility=Reversibility.PARTIAL;idempotent=False;input_model=RestoreIn;output_model=RestoreOut;permissions=frozenset({Permission.WRITE})
+ async def run(self,a):p=self.policy.restore_recycled(a['entry']);return {'path':p,'restored':True}
+
+class TrashListIn(BaseModel):model_config=ConfigDict(extra='forbid')
+class TrashListOut(BaseModel):entries:list[dict[str,Any]];truncated:bool=False
+class ListTrash(_FsBase):
+ name='list_recycle_entries';description='List recoverable trash entries';risk_level=RiskLevel.LOW;reversibility=Reversibility.READ_ONLY;input_model=TrashListIn;output_model=TrashListOut;permissions=frozenset({Permission.READ})
+ async def run(self,a):return {'entries':self.policy.list_recycle_entries(),'truncated':False}
+
+class PurgeIn(BaseModel):entry:str;confirmation:Literal['PURGE']
+class PurgeOut(BaseModel):entry:str;purged:bool
+class PurgeTrash(_FsBase):
+ name='purge_recycle_entry';description='Permanently remove one trash entry with explicit PURGE confirmation';risk_level=RiskLevel.CRITICAL;reversibility=Reversibility.IRREVERSIBLE;idempotent=False;input_model=PurgeIn;output_model=PurgeOut;permissions=frozenset({Permission.WRITE})
+ async def run(self,a):self.policy.purge_recycle_entry(a['entry'],a['confirmation']);return {'entry':a['entry'],'purged':True}
+
+class BackupIn(BaseModel):path:str
+class BackupOut(BaseModel):backup_path:str
+class BackupFileTool(_FsBase):
+ name='backup_file';description='Snapshot one workspace file into the internal backup store';risk_level=RiskLevel.LOW;reversibility=Reversibility.READ_ONLY;idempotent=False;input_model=BackupIn;output_model=BackupOut;permissions=frozenset({Permission.READ})
+ async def run(self,a):return {'backup_path':self.policy.backup_file(a['path'])}
