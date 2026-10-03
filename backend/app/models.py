@@ -24,10 +24,26 @@ class ChatRequest(BaseModel):
 class ChatResponse(BaseModel):content:str=Field(min_length=1,max_length=100000);model:str=Field(min_length=1,max_length=300);prompt_tokens:int|None=Field(None,ge=0,le=10000000);completion_tokens:int|None=Field(None,ge=0,le=10000000)
 class Permission(StrEnum):SAFE='safe';READ='read';WRITE='write';EXECUTE='execute';NETWORK='network';SCHEDULE='schedule';AUTOMATION='automation';ADMIN='admin'
 class RiskLevel(StrEnum):LOW='low';MEDIUM='medium';HIGH='high';CRITICAL='critical'
+class Reversibility(StrEnum):
+    """Phase 3 tool metadata: how (and whether) an executed action can be undone."""
+    READ_ONLY='read_only'      # no state change at all (calculator, listing, capture)
+    REVERSIBLE='reversible'    # a defined inverse exists (write over backup, window focus)
+    PARTIAL='partial'          # undo is best-effort or lossy (file delete via trash)
+    IRREVERSIBLE='irreversible'# cannot be undone (terminal side effects, submissions)
+
+# States that are internal to the Phase 2 machine and must serialize to their
+# legacy wire alias. 'running'/'waiting_confirmation' are themselves wire
+# values and are returned unchanged by ``TaskStatus.legacy_wire``.
+_INTERNAL_STATUS_ALIASES:dict[str,str]={
+    'pending':'planning','observing':'running','acting':'running',
+    'verifying':'running','recovering':'running','waiting_approval':'waiting_confirmation'}
 class ToolDef(BaseModel):
     name:str
     description:str
     category:str
+    version:str='1.0.0'
+    platform:list[str]=Field(default_factory=lambda:['linux','windows','macos'])
+    reversibility:Reversibility=Reversibility.PARTIAL
     risk_level:RiskLevel
     required_permissions:list[Permission]
     permissions:list[Permission]
@@ -58,8 +74,9 @@ class TaskStatus(StrEnum):
     PENDING='pending';PLANNING='planning';OBSERVING='observing';RUNNING='running';ACTING='acting';VERIFYING='verifying';RECOVERING='recovering';WAITING_APPROVAL='waiting_approval';WAITING='waiting_confirmation';COMPLETED='completed';DONE='completed';FAILED='failed';CANCELLED='cancelled'
     @property
     def legacy_wire(self)->str:
-        from app.agent_core import LEGACY_STATUS_ALIASES, TaskState
-        return LEGACY_STATUS_ALIASES[TaskState(self.value)]
+        # Wire values pass through unchanged; internal Phase 2 states map onto
+        # their closest legacy alias via the shared table (no circular import).
+        return _INTERNAL_STATUS_ALIASES.get(self.value, self.value)
 class Step(BaseModel):id:str=Field(default_factory=lambda:str(uuid4()));title:str;tool:str;arguments:dict[str,Any]=Field(default_factory=dict);status:StepStatus=StepStatus.PENDING;result:ToolResult|None=None
 class Task(BaseModel):
     id:str=Field(default_factory=lambda:str(uuid4()));conversation_id:str=Field(default_factory=lambda:str(uuid4()));goal:str;intent:str='general';status:TaskStatus=TaskStatus.PLANNING;steps:list[Step]=Field(default_factory=list);current_step:int=0;errors:list[str]=Field(default_factory=list);answer:str|None=None;created_at:datetime=Field(default_factory=lambda:datetime.now(UTC));updated_at:datetime=Field(default_factory=lambda:datetime.now(UTC))

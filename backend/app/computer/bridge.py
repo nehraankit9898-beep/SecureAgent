@@ -52,6 +52,8 @@ class ComputerToolAdapter(Tool):
         self.name = inner.name
         self.description = inner.description
         self.category = inner.category.value
+        self.version = inner.version
+        self.reversibility = inner.reversibility
         self.risk_level = inner.risk_level
         self.input_model = inner.input_model
         self.output_model = inner.output_model

@@ -1,12 +1,13 @@
 import asyncio
 import json
+import re
 from abc import ABC, abstractmethod
 from time import perf_counter
 from typing import Any
 
 from pydantic import BaseModel
 
-from app.models import Permission, RiskLevel, ToolDef, ToolResult
+from app.models import Permission, Reversibility, RiskLevel, ToolDef, ToolResult
 
 
 class Tool(ABC):
@@ -15,7 +16,9 @@ class Tool(ABC):
     name: str
     description: str
     category = "general"
+    version = "1.0.0"  # Phase 3 metadata: semver of the tool implementation
     risk_level = RiskLevel.LOW
+    reversibility = Reversibility.PARTIAL  # Phase 3 metadata: undo characteristics
     input_model: type[BaseModel]
     output_model: type[BaseModel]
     permissions = frozenset({Permission.SAFE})
@@ -35,6 +38,8 @@ class Tool(ABC):
             name=self.name,
             description=self.description,
             category=self.category,
+            version=self.version,
+            reversibility=self.reversibility,
             risk_level=self.risk_level,
             required_permissions=required,
             permissions=required,
@@ -49,6 +54,7 @@ class Tool(ABC):
             requires_approval=self.requires_approval,
             disabled_reason=self.disabled_reason,
             platforms=self.platforms or ["linux", "windows", "macos"],
+            platform=self.platforms or ["linux", "windows", "macos"],
         )
 
     @abstractmethod
@@ -66,6 +72,11 @@ class Registry:
     def add(self, tool: Tool) -> None:
         required=("name","description","input_model","output_model","permissions","risk_level","timeout_seconds","idempotent","audit_required")
         if any(not hasattr(tool,item) for item in required) or not isinstance(tool.name,str) or not tool.name or not isinstance(tool.description,str) or not isinstance(tool.permissions,frozenset) or not isinstance(tool.idempotent,bool) or not isinstance(tool.timeout_seconds,(int,float)) or tool.timeout_seconds<=0:
+            raise ValueError("tool security metadata is incomplete")
+        # Phase 3: version + reversibility are mandatory first-class metadata.
+        if not isinstance(getattr(tool, "version", None), str) or not re.fullmatch(r"\d+\.\d+\.\d+", tool.version):
+            raise ValueError("tool security metadata is incomplete")
+        if not isinstance(getattr(tool, "reversibility", None), Reversibility):
             raise ValueError("tool security metadata is incomplete")
         if tool.name in self.tools:
             raise ValueError(f"duplicate tool: {tool.name}")
